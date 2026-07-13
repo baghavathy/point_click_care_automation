@@ -1,0 +1,56 @@
+name: Build desktop installer
+
+# Builds the Windows .exe (PyInstaller + Inno Setup) that end users install.
+# PyInstaller is not a cross-compiler, so this must run on an actual Windows
+# machine — that's what windows-latest gives us.
+#
+# Triggers:
+#   - automatically whenever the app code changes on main
+#   - manually any time via the "Run workflow" button on the Actions tab
+on:
+  push:
+    branches: [main]
+    paths:
+      - "point-click-care-automation-app/**"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write # needed to publish/update the "latest" release
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: point-click-care-automation-app
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install Python + dependencies (incl. PyInstaller)
+        run: uv sync --extra build
+
+      - name: Build GatewayPCC.exe with PyInstaller
+        run: uv run pyinstaller --noconfirm GatewayPCC.spec
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Build the one-click installer
+        run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss'
+
+      - name: Upload build artifact (every run)
+        uses: actions/upload-artifact@v4
+        with:
+          name: GatewayPCC-Setup
+          path: point-click-care-automation-app/installer/GatewayPCC-Setup.exe
+
+      - name: Publish/refresh the "latest" release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest desktop build
+          make_latest: true
+          files: point-click-care-automation-app/installer/GatewayPCC-Setup.exe
