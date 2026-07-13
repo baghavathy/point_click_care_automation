@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#38bdf8"/>
+      <stop offset="1" stop-color="#0284c7"/>
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="64" height="64" rx="14" fill="url(#g)"/>
+  <g fill="#ffffff">
+    <!-- top beam (kasagi) with overhang -->
+    <rect x="6" y="13" width="52" height="7" rx="2"/>
+    <!-- small lip under the top beam -->
+    <rect x="11" y="21" width="42" height="3" rx="1"/>
+    <!-- second crossbar (nuki) -->
+    <rect x="15" y="29" width="34" height="5" rx="1"/>
+    <!-- left and right posts -->
+    <rect x="18" y="14" width="7" height="38" rx="1"/>
+    <rect x="39" y="14" width="7" height="38" rx="1"/>
+  </g>
+</svg>

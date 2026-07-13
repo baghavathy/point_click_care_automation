@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Gateway PCC</title>
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}" />
+  <link rel="alternate icon" href="{{ url_for('static', filename='favicon.ico') }}" sizes="any" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+</head>
+<body>
+  <!-- ============ LOGIN SCREEN ============ -->
+  <div id="login-view" class="login-view">
+    <!-- Step 1: username + password -->
+    <form class="login-card" id="login-form" autocomplete="off">
+      <div class="brand login-brand">
+        <span class="brand-mark">⛩</span>
+        <div>
+          <div class="brand-title">Gateway PCC</div>
+          <div class="brand-sub">Sign in</div>
+        </div>
+      </div>
+      <label>Username
+        <input type="text" id="login-username" autocomplete="off" />
+      </label>
+      <label>Password
+        <input type="password" id="login-password" autocomplete="off" />
+      </label>
+      <button type="submit" class="primary big" id="login-btn">Sign in</button>
+      <div id="login-status" class="status"></div>
+    </form>
+  </div>
+
+  <div class="app hidden">
+    <!-- ============ LEFT SIDEBAR ============ -->
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-mark">⛩</span>
+        <div>
+          <div class="brand-title">Gateway PCC</div>
+          <div class="brand-sub">Facility Launcher</div>
+        </div>
+      </div>
+
+      <div class="search-box">
+        <span class="search-icon">🔍</span>
+        <input type="text" id="search-input" placeholder="Search facilities…" autocomplete="off" />
+        <button id="search-clear" class="search-clear hidden" title="Clear">✕</button>
+      </div>
+      <div id="search-results" class="search-results hidden"></div>
+
+      <div class="sidebar-section-label">Clients &amp; Facilities</div>
+      <nav id="tree" class="tree"><!-- populated by JS --></nav>
+
+      <button id="settings-btn" class="settings-btn">⚙ Settings</button>
+      <div class="powered-by">Powered by Epicle, Inc</div>
+    </aside>
+
+    <!-- ============ MAIN ============ -->
+    <main class="main">
+      <!-- Top bar: signed-in Gateway user -->
+      <header class="topbar">
+        <div class="topbar-title">Admin Console</div>
+        <div class="topbar-right">
+          <div class="topbar-user-col">
+            <span class="gw-user" id="gw-user" title="Signed-in Gateway user"></span>
+            <a class="download-link" id="download-app-link"
+               href="/download/desktop-app"
+               title="Download the Gateway PCC desktop app installer">
+              ⬇ Download desktop app
+            </a>
+          </div>
+          <button id="app-logout-btn" class="ghost">Sign out</button>
+        </div>
+      </header>
+
+      <!-- Facility detail view (manage; launching happens in the desktop app) -->
+      <section id="detail-view" class="view">
+        <div id="detail-empty" class="empty-state">
+          <h2>Select a facility to manage</h2>
+          <p>Pick a location from the left sidebar to view its details, or open
+            Settings to create clients, facilities and users.</p>
+          <p>Users launch &amp; sign in to these facilities from the <b>desktop app</b>.</p>
+          <button id="empty-add-btn" class="primary big">⚙ Add a facility in Settings</button>
+        </div>
+        <div id="detail-card" class="card hidden">
+          <h2 id="d-name"></h2>
+          <div class="meta-grid">
+            <div><span class="lbl">Location</span><span id="d-location"></span></div>
+            <div><span class="lbl">Site URL</span><span id="d-url"></span></div>
+            <div><span class="lbl">Username</span><span id="d-user"></span></div>
+            <div><span class="lbl">TOTP / 2FA</span><span id="d-totp"></span></div>
+          </div>
+          <div class="row">
+            <button id="edit-btn" class="ghost">Edit</button>
+            <button id="del-facility-btn" class="danger">Delete</button>
+          </div>
+          <div id="launch-status" class="status"></div>
+        </div>
+      </section>
+
+      <!-- Settings view -->
+      <section id="settings-view" class="view hidden">
+        <h2>Settings</h2>
+
+        <div class="card admin-only">
+          <h3>Users</h3>
+          <p class="hint">Admin creates Gateway PCC users. Each user signs in and manages only
+            their own clients, facilities and PCC logins. Use <b>Reset password</b> below if a
+            user is locked out.</p>
+          <div class="form-grid">
+            <label>New username
+              <input type="text" id="u-name" autocomplete="off" />
+            </label>
+            <label>Password
+              <input type="password" id="u-pass" autocomplete="new-password" />
+            </label>
+            <label>Role
+              <select id="u-role">
+                <option value="user">User</option>
+                <option value="admin">Admin</option>
+              </select>
+            </label>
+          </div>
+          <button id="add-user-btn" class="primary">+ Create User</button>
+          <span id="user-status" class="status inline"></span>
+          <ul id="user-list" class="plain-list"></ul>
+        </div>
+
+        <div class="card admin-only">
+          <h3>Login Site</h3>
+          <p class="hint">The site every facility opens for sign-in. Individual facilities
+            may override this with their own URL.</p>
+          <label>Login site URL (opened first)
+            <input type="text" id="s-site-url" placeholder="https://pointclickcare.com/login/" />
+          </label>
+          <label>Login form URL (navigated to in the same browser)
+            <input type="text" id="s-login-url" placeholder="https://login.pointclickcare.com/home/userLogin.xhtml" />
+          </label>
+          <p class="hint">After the site opens, the app navigates here, types the username,
+            clicks <b>Next</b>, then enters the password and clicks <b>Sign in</b>. Leave the
+            login form URL blank to sign in directly on the site above.</p>
+        </div>
+
+        <div class="card admin-only">
+          <h3>Logout</h3>
+          <p class="hint">Used by the <b>Logout session</b> button (top-right). It clicks the user
+            menu, then the Sign Out link, inside the live browser. Defaults match PCC eMAR.</p>
+          <div class="form-grid">
+            <label>User-menu selector (opens the menu)
+              <input type="text" id="s-logout-menu" placeholder=".evergreen-emar-text-body2" />
+            </label>
+            <label>Logout selector (blank = match "Sign Out" text)
+              <input type="text" id="s-logout-sel" placeholder="(uses Sign Out text)" />
+            </label>
+            <label>Keyboard fallback — Down-arrow presses before Enter
+              <input type="text" id="s-logout-arrows" placeholder="4" />
+            </label>
+            <label>Delay per logout step (seconds)
+              <input type="text" id="s-logout-delay" placeholder="4" />
+            </label>
+            <label>Logout URL (optional — most reliable if you know it)
+              <input type="text" id="s-logout-url" placeholder="e.g. https://www19.pointclickcare.com/home/logoff.jsp" />
+            </label>
+          </div>
+        </div>
+
+        <div class="card admin-only">
+          <h3>Two-Factor (2FA)</h3>
+          <p class="hint">When the 6-digit code screen appears, the app enters the TOTP code
+            (2-second gap per digit). If you remember the device, the code screen is skipped
+            until it expires — the app detects this automatically and only re-enters a code
+            when the screen reappears.</p>
+          <label class="switch-row">
+            <span>Tick "Remember this device" (14 days) on the 2FA screen</span>
+            <label class="switch">
+              <input type="checkbox" id="s-remember-device" />
+              <span class="slider"></span>
+            </label>
+          </label>
+        </div>
+
+        <div class="card admin-only">
+          <h3>FoxyProxy (USA)</h3>
+          <p class="hint">The login screen only loads through the US proxy. Enable this so every
+            browser launch routes through it automatically.</p>
+          <label class="switch-row">
+            <span>Enable FoxyProxy for USA</span>
+            <label class="switch">
+              <input type="checkbox" id="s-proxy-enabled" />
+              <span class="slider"></span>
+            </label>
+          </label>
+          <div class="form-grid">
+            <label>Scheme
+              <select id="s-proxy-scheme">
+                <option value="http">HTTP / HTTPS</option>
+                <option value="socks">SOCKS5</option>
+              </select>
+            </label>
+            <label>Proxy host
+              <input type="text" id="s-proxy-host" placeholder="us-proxy.example.com" />
+            </label>
+            <label>Proxy port
+              <input type="text" id="s-proxy-port" placeholder="8080" />
+            </label>
+            <label>Proxy username (if the proxy requires login)
+              <input type="text" id="s-proxy-username" placeholder="proxy user" autocomplete="off" />
+            </label>
+            <label>Proxy password
+              <input type="password" id="s-proxy-password" placeholder="leave blank to keep saved" autocomplete="new-password" />
+            </label>
+            <label>FoxyProxy .xpi (optional)
+              <input type="text" id="s-foxyproxy-xpi" placeholder="C:\path\to\foxyproxy_standard.xpi" />
+            </label>
+          </div>
+          <label class="switch-row">
+            <span>Run Firefox headless (no visible window)</span>
+            <label class="switch">
+              <input type="checkbox" id="s-headless" />
+              <span class="slider"></span>
+            </label>
+          </label>
+          <button id="save-settings-btn" class="primary">Save Settings</button>
+          <span id="settings-status" class="status inline"></span>
+        </div>
+
+        <div class="card">
+          <h3>Clients</h3>
+          <div class="row">
+            <input type="text" id="new-client-name" placeholder="New client name" />
+            <button id="add-client-btn" class="primary">+ Create Client</button>
+          </div>
+          <ul id="client-list" class="plain-list"></ul>
+        </div>
+
+        <div class="card">
+          <h3>Add Facility</h3>
+          <div class="copy-row">
+            <label>Copy details from
+              <select id="f-copy-from"><option value="">— none —</option></select>
+            </label>
+            <button id="copy-from-btn" class="ghost">📋 Copy</button>
+            <span class="hint">Copies client, name, location, URL &amp; selectors — <b>not</b>
+              username, password or QR. Then just add the new entry's specifics.</span>
+          </div>
+          <div class="form-grid">
+            <label>Client
+              <select id="f-client"></select>
+            </label>
+            <label>…or type a new client
+              <input type="text" id="f-new-client" placeholder="New client name (creates it)" />
+            </label>
+            <label>Facility name
+              <input type="text" id="f-name" placeholder="North Campus" />
+            </label>
+            <label>Location
+              <input type="text" id="f-location" placeholder="Chicago, IL" />
+            </label>
+            <label>Site URL (optional — uses Settings default)
+              <input type="text" id="f-url" placeholder="https://pointclickcare.com/login/" />
+            </label>
+            <label>Username
+              <input type="text" id="f-user" placeholder="user@facility"
+                     autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
+            </label>
+            <label>Password
+              <input type="password" id="f-pass" placeholder="••••••••" autocomplete="new-password" />
+            </label>
+          </div>
+
+          <div class="totp-block">
+            <div class="totp-tabs">
+              <button class="tab active" data-tab="qr">Import QR code</button>
+              <button class="tab" data-tab="hash">Paste hash / secret</button>
+            </div>
+            <div class="tab-pane" data-pane="qr">
+              <input type="file" id="f-qr-file" accept="image/*" />
+              <button id="decode-qr-btn" class="ghost">Decode QR</button>
+              <span id="qr-status" class="status inline"></span>
+            </div>
+            <div class="tab-pane hidden" data-pane="hash">
+              <input type="text" id="f-hash" placeholder="Paste base32 secret / hash" />
+              <button id="verify-hash-btn" class="ghost">Verify</button>
+              <span id="hash-status" class="status inline"></span>
+            </div>
+            <input type="hidden" id="f-totp-secret" />
+            <div id="totp-preview" class="totp-preview hidden">
+              <span class="lbl">Current 6-digit code</span>
+              <span id="totp-code" class="totp-code">------</span>
+              <span id="totp-timer" class="totp-timer"></span>
+            </div>
+          </div>
+
+          <details class="advanced">
+            <summary>Advanced — custom field selectors (optional)</summary>
+            <div class="form-grid">
+              <label>Username selector (CSS)<input type="text" id="f-sel-user" /></label>
+              <label>Password selector (CSS)<input type="text" id="f-sel-pass" /></label>
+              <label>Submit selector (CSS)<input type="text" id="f-sel-submit" /></label>
+              <label>OTP selector (CSS)<input type="text" id="f-sel-totp" /></label>
+            </div>
+          </details>
+
+          <button id="add-facility-btn" class="primary">+ Add Facility</button>
+          <span id="facility-status" class="status inline"></span>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="{{ url_for('static', filename='js/server.js') }}"></script>
+</body>
+</html>

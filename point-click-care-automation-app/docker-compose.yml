@@ -1,0 +1,30 @@
+services:
+  mongo:
+    image: mongo:8
+    container_name: gateway-mongo
+    volumes:
+      # Persists all app data (users, clients, facilities, settings).
+      - gateway-mongo-data:/data/db
+    restart: unless-stopped
+
+  gateway-pcc:
+    build: .
+    image: gateway-pcc
+    container_name: gateway-pcc
+    depends_on:
+      - mongo
+    ports:
+      - "5000:5000"
+    # Secrets + admin + keys come from .env (MONGODB_DB, ADMIN_*, FLASK_SECRET_KEY,
+    # SECRET_KEY). BACK UP SECRET_KEY — it decrypts stored PCC credentials.
+    env_file:
+      - .env
+    environment:
+      GATEWAY_HOST: "0.0.0.0"
+      GATEWAY_PORT: "5000"
+      # Inside the compose network Mongo is reached by service name, not localhost.
+      MONGODB_URI: "mongodb://mongo:27017"
+    restart: unless-stopped
+
+volumes:
+  gateway-mongo-data:

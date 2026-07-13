@@ -1,0 +1,9 @@
+.venv/
+.env
+data/
+build/
+dist/
+installer/
+__pycache__/
+*.pyc
+*.exe

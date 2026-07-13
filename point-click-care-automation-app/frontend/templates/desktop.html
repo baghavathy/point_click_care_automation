@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Gateway PCC</title>
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}" />
+  <link rel="alternate icon" href="{{ url_for('static', filename='favicon.ico') }}" sizes="any" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+</head>
+<body>
+  <!-- ============ LOGIN SCREEN ============ -->
+  <div id="login-view" class="login-view">
+    <form class="login-card" id="login-form" autocomplete="off">
+      <div class="brand login-brand">
+        <span class="brand-mark">⛩</span>
+        <div>
+          <div class="brand-title">Gateway PCC</div>
+          <div class="brand-sub">Sign in</div>
+        </div>
+      </div>
+      <label>Server
+        <input type="text" id="login-server" placeholder="https://pcc.arithmed.com" autocomplete="off" spellcheck="false" />
+      </label>
+      <label>Username
+        <input type="text" id="login-username" autocomplete="off" />
+      </label>
+      <label>Password
+        <input type="password" id="login-password" autocomplete="off" />
+      </label>
+      <button type="submit" class="primary big" id="login-btn">Sign in</button>
+      <div id="login-status" class="status"></div>
+      <p class="hint">Use the username &amp; password created for you in the Gateway PCC website.
+        For a local server, set Server to <b>http://127.0.0.1:5000</b>.</p>
+    </form>
+  </div>
+
+  <div class="app hidden">
+    <!-- ============ LEFT SIDEBAR ============ -->
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-mark">⛩</span>
+        <div>
+          <div class="brand-title">Gateway PCC</div>
+          <div class="brand-sub">Facility Launcher</div>
+        </div>
+      </div>
+
+      <div class="search-box">
+        <span class="search-icon">🔍</span>
+        <input type="text" id="search-input" placeholder="Search facilities…" autocomplete="off" />
+        <button id="search-clear" class="search-clear hidden" title="Clear">✕</button>
+      </div>
+      <div id="search-results" class="search-results hidden"></div>
+
+      <div class="sidebar-section-label">My Clients &amp; Facilities</div>
+      <nav id="tree" class="tree"><!-- populated by JS --></nav>
+
+      <button id="refresh-btn" class="settings-btn">↻ Refresh</button>
+      <div class="powered-by">Powered by Epicle, Inc</div>
+    </aside>
+
+    <!-- ============ MAIN ============ -->
+    <main class="main">
+      <!-- Top bar: active PCC sessions + signed-in Gateway user -->
+      <header class="topbar">
+        <div class="topbar-title">Active sessions</div>
+        <div class="topbar-right">
+          <div id="sessions-bar" class="sessions-bar">
+            <span class="no-sessions" id="no-sessions">No open sessions</span>
+          </div>
+          <span class="gw-user" id="gw-user" title="Signed-in Gateway user"></span>
+          <button id="app-logout-btn" class="ghost">Sign out</button>
+        </div>
+      </header>
+
+      <!-- Facility detail / launch view -->
+      <section id="detail-view" class="view">
+        <div id="detail-empty" class="empty-state">
+          <h2>Select a facility to launch</h2>
+          <p>Pick a location from the left sidebar to open its site and sign in
+            automatically with the stored credentials.</p>
+          <p>Facilities are managed for you in the Gateway PCC website. Click
+            <b>↻ Refresh</b> if a newly added one isn't showing yet.</p>
+        </div>
+        <div id="detail-card" class="card hidden">
+          <h2 id="d-name"></h2>
+          <div class="meta-grid">
+            <div><span class="lbl">Location</span><span id="d-location"></span></div>
+            <div><span class="lbl">Site URL</span><span id="d-url"></span></div>
+            <div><span class="lbl">Username</span><span id="d-user"></span></div>
+            <div><span class="lbl">TOTP / 2FA</span><span id="d-totp"></span></div>
+          </div>
+          <div class="row">
+            <button id="launch-btn" class="primary big">▶ Launch &amp; Login</button>
+          </div>
+          <div id="launch-status" class="status"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="{{ url_for('static', filename='js/desktop.js') }}"></script>
+</body>
+</html>

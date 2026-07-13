@@ -1,0 +1,22 @@
+# Never bake local data/keys into the image — these belong in a mounted volume.
+data/
+*.key
+*.db
+
+# Python / uv
+.venv/
+__pycache__/
+*.pyc
+
+# PyInstaller build output (desktop installer — not used in the container)
+build/
+dist/
+installer/
+*.spec
+
+# Editor / OS / VCS
+.git/
+.gitignore
+.idea/
+.vscode/
+*.log
