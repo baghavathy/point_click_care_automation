@@ -76,8 +76,6 @@ async function loadTree() {
 function selectFacility(f) {
   selectedFacility = f;
   $("facility-search").value = f.name;
-  $("detail-empty").classList.add("hidden");
-  $("detail-card").classList.remove("hidden");
   $("d-name").textContent = f.name;
   $("d-url").textContent = f.site_url || (settings.site_url || "") + "  (default)";
   $("d-user").textContent = f.username || "—";
@@ -85,6 +83,7 @@ function selectFacility(f) {
   if (f.has_totp) showStoredTotp(f.id);
   $("launch-status").textContent = "";
   closeFacilityDropdown();
+  showSection("launch-view");
 }
 
 async function showStoredTotp(facilityId) {
@@ -100,26 +99,49 @@ async function showStoredTotp(facilityId) {
 }
 
 // ---------------------------------------------------------------------------
-// The three mutually-exclusive main-view sections.
+// The four mutually-exclusive main-view sections.
 // ---------------------------------------------------------------------------
-const SECTIONS = ["facilities-section", "admin-record-view", "results-view"];
+const SECTIONS = ["empty-view", "launch-view", "admin-record-view", "results-view"];
 function showSection(id) {
   for (const s of SECTIONS) $(s).classList.toggle("hidden", s !== id);
 }
 
+$("nav-launch-btn").onclick = () => {
+  if (!selectedFacility) {
+    toast("Select a facility above first.", false);
+    return;
+  }
+  showSection("launch-view");
+};
+
+// Independent of Launch: this is a single self-contained action. The backend
+// launches + signs the facility in itself if there's no session yet (waiting
+// out login rather than the operator having to press Launch first), then
+// drives Reports -> Clinical -> Administration Record. Can take a while the
+// first time (browser start + sign-in + OTP + navigation), so the button
+// shows a busy state for the whole round trip instead of firing and forgetting.
 $("nav-reports-btn").onclick = async () => {
   if (!selectedFacility) {
     toast("Select a facility above first.", false);
     return;
   }
-  toast(`Opening Reports for ${selectedFacility.name}… (Reports → Clinical → Administration Record)`, true);
+  const btn = $("nav-reports-btn");
+  const original = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = `<span class="nav-icon">⏳</span> Opening…`;
+  toast(`Opening Reports for ${selectedFacility.name}… launching/signing in if needed, then Reports → Clinical → Administration Record.`, true);
   try {
     const r = await api.post(`/api/facilities/${selectedFacility.id}/reports/administration-record`);
     applyAdminRecordOptions(r.options);
+    $("ar-facility-name").textContent = selectedFacility.name;
     toast(r.message || "Opened.", true);
     showSection("admin-record-view");
+    refreshSessions();
   } catch (err) {
     toast(err.message, false);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = original;
   }
 };
 
@@ -127,7 +149,7 @@ $("nav-results-btn").onclick = async () => {
   await loadResults();
   showSection("results-view");
 };
-$("results-back-btn").onclick = () => showSection("facilities-section");
+$("results-back-btn").onclick = () => showSection("empty-view");
 
 // ---------------------------------------------------------------------------
 // Administration Record report form — native mirror of PCC's report setup
@@ -297,7 +319,7 @@ function initAdminRecordForm() {
     e.preventDefault();
     $("ar-templates").querySelectorAll("input[type=checkbox]").forEach((c) => (c.checked = false));
   };
-  $("ar-back-btn").onclick = () => showSection("facilities-section");
+  $("ar-back-btn").onclick = () => showSection("empty-view");
   $("ar-run-btn").onclick = runAdministrationRecordReport;
 }
 
@@ -475,9 +497,8 @@ function closeFacilityDropdown() {
 function clearFacilitySearch() {
   $("facility-search").value = "";
   selectedFacility = null;
-  $("detail-card").classList.add("hidden");
-  $("detail-empty").classList.remove("hidden");
   renderFacilityDropdown("");
+  showSection("empty-view");
 }
 
 $("facility-search").addEventListener("focus", openFacilityDropdown);
@@ -575,8 +596,7 @@ $("app-logout-btn").onclick = async () => {
   facilitiesByClient = {};
   $("facility-search").value = "";
   closeFacilityDropdown();
-  $("detail-card").classList.add("hidden");
-  $("detail-empty").classList.remove("hidden");
+  showSection("empty-view");
   showLogin();
 };
 

@@ -183,10 +183,17 @@ def api_session_focus(facility_id: int):
 
 @app.post("/api/facilities/<int:facility_id>/reports/administration-record")
 @login_required
+@_cloud_call
 def api_open_administration_record(facility_id: int):
-    # Drives the already-open, already-signed-in Selenium session locally —
-    # no cloud round-trip needed (no secrets involved, just DOM navigation).
-    result = automation.open_administration_record(facility_id)
+    # Self-contained: launches + signs in the facility first if there's no
+    # active session yet (waiting out login rather than erroring), then
+    # navigates Reports -> Clinical -> Administration Record. Independent of
+    # whether the operator pressed Launch first.
+    cfg = cloud.get(f"/api/facilities/{facility_id}/launch-config")
+    facility = cfg.get("facility") or {}
+    settings = cfg.get("settings") or {}
+    owner_id = cloud.user.get("id") if cloud.user else None
+    result = automation.open_reports_auto(facility, settings, owner_id)
     return jsonify(result), (200 if result.get("ok") else 400)
 
 

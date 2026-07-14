@@ -1189,6 +1189,53 @@ def _scrape_administration_record_form(driver, facility_id: int) -> dict[str, An
     return result
 
 
+def open_reports_auto(facility: dict, settings: dict, owner_id=None) -> dict[str, Any]:
+    """Self-contained entry point for the sidebar's Reports button: launches
+    and signs in the facility if it isn't already an active session, waits
+    for that sign-in to actually finish, then opens Administration Record.
+
+    Independent of the sidebar's Launch button — an operator can press
+    Reports straight away without ever pressing Launch first. If a session is
+    already open (e.g. Launch WAS pressed earlier), this reuses it instead of
+    starting a second browser.
+
+    Previously, pressing Reports on a facility with no session (or one still
+    mid-login) failed immediately with "session busy" — the login thread
+    holds the session lock for its whole duration (OTP entry alone can take
+    15-20+ seconds), so a request arriving during that window bounced off a
+    short 10s wait. That's exactly what "the first press does nothing, the
+    second one works" was: the first press hit the busy-session error while
+    login was still running; by the second press login had finished. Waiting
+    out the lock here (instead of erroring) fixes that properly.
+    """
+    facility_id = facility.get("id")
+    sess = _sessions.get(facility_id)
+    if sess is None:
+        launch_result = launch_facility(facility, settings, owner_id)
+        if not launch_result.get("ok"):
+            return launch_result
+        # The worker thread publishes the session almost immediately after the
+        # browser starts (before login begins) — wait for that to happen.
+        for _ in range(300):  # up to ~30s for Firefox/profile/proxy startup
+            sess = _sessions.get(facility_id)
+            if sess is not None:
+                break
+            time.sleep(0.1)
+        if sess is None:
+            return {"ok": False, "error": "Couldn't start the browser session."}
+
+    # The worker holds this lock for the whole login (page load + credentials
+    # + OTP entry). Wait it out rather than erroring — this is the actual fix
+    # for the "press Reports twice" symptom described above.
+    lock = sess.get("lock")
+    if lock is not None:
+        if not lock.acquire(timeout=150):
+            return {"ok": False, "error": "Still signing in — try Reports again in a moment."}
+        lock.release()  # open_administration_record re-acquires it itself below
+
+    return open_administration_record(facility_id)
+
+
 def open_administration_record(facility_id: int) -> dict[str, Any]:
     """Drive an already-open, already-signed-in PCC session to
     Reports -> Clinical -> Administration Record (under eMAR), landing on that
@@ -1325,28 +1372,38 @@ def _report_period_label(params: dict) -> str:
     return time.strftime("%Y-%m-%d")
 
 
-def _wait_for_report_pdf_url(driver, baseline_handles: set, timeout: int = 120) -> Optional[str]:
-    """Poll every window opened after Run Report was clicked until one of them
-    is sitting on the rendered PDF. Returns that window's URL (driver stays
-    focused on it) or None on timeout. PCC's report render can take a while for
-    a large facility/date range, hence the generous timeout."""
+def _wait_for_report_pdf_url(driver, baseline_handles: set, facility_id: int,
+                              timeout: int = 180) -> Optional[str]:
+    """Poll every open window until one of them is sitting on the rendered
+    PDF. Returns that window's URL (driver stays focused on it) or None on
+    timeout. PCC's report render can take a while for a large facility/date
+    range, hence the generous timeout.
+
+    Checks EVERY open window, not just ones opened after Run Report — PCC
+    doesn't reliably always pop a brand new window for the PDF; sometimes it
+    navigates the resident-find.jsp loader window (or even the original PCC
+    window) straight to it instead. ``baseline_handles`` is only used later,
+    by ``_close_extra_windows``, to know what's safe to close."""
     end = time.time() + timeout
+    seen_urls: set = set()
     while time.time() < end:
         try:
             handles = driver.window_handles
         except WebDriverException:
             return None
         for h in handles:
-            if h in baseline_handles:
-                continue
             try:
                 driver.switch_to.window(h)
                 url = driver.current_url
             except WebDriverException:
                 continue
+            if url not in seen_urls:
+                seen_urls.add(url)
+                _log(f"Reports[{facility_id}]: window {h[:8]} -> {url}")
             if ADMIN_RECORD_PDF_URL_MARKER in url:
                 return url
         time.sleep(1)
+    _log(f"Reports[{facility_id}]: timed out waiting for the PDF; windows seen: {sorted(seen_urls)}")
     return None
 
 
@@ -1373,16 +1430,26 @@ def _download_pdf_with_driver_cookies(driver, url: str) -> bytes:
     session's cookies — this is what actually gives us a searchable PDF (real
     text layer, as PCC generated it) rather than a screenshot/print of the
     browser's built-in PDF viewer. ``driver`` must already be focused on a
-    window whose origin matches ``url`` so the cookies are the right ones."""
+    window whose origin matches ``url`` so the cookies are the right ones.
+
+    Raises ValueError if the response isn't actually a PDF (e.g. the session
+    expired mid-download and we got an HTML login page back instead) — better
+    to fail loudly here than silently save garbage into Results.
+    """
     cookies = driver.get_cookies()
     cookie_header = "; ".join(f"{c['name']}={c['value']}" for c in cookies)
+    origin = "/".join(url.split("/", 3)[:3])  # scheme://host
     req = urllib.request.Request(url, headers={
         "Cookie": cookie_header,
         "User-Agent": "GatewayPCC-Desktop/1.0",
         "Accept": "application/pdf,*/*",
+        "Referer": origin + "/",
     })
     with urllib.request.urlopen(req, timeout=60) as resp:
-        return resp.read()
+        data = resp.read()
+    if not data.startswith(b"%PDF"):
+        raise ValueError(f"response wasn't a PDF (first bytes: {data[:40]!r})")
+    return data
 
 
 def run_administration_record_report(facility_id: int, params: dict,
@@ -1435,7 +1502,7 @@ def run_administration_record_report(facility_id: int, params: dict,
         if not _find_and_click(driver, "#runButton", ["Run Report"]):
             return {"ok": False, "error": "Couldn't find the Run Report button."}
 
-        pdf_url = _wait_for_report_pdf_url(driver, baseline_handles)
+        pdf_url = _wait_for_report_pdf_url(driver, baseline_handles, facility_id)
         if not pdf_url:
             _close_extra_windows(driver, baseline_handles)
             return {"ok": False, "error": "Timed out waiting for the report to finish generating."}
@@ -1443,7 +1510,8 @@ def run_administration_record_report(facility_id: int, params: dict,
         _log(f"Reports[{facility_id}]: report ready at {pdf_url}")
         try:
             pdf_bytes = _download_pdf_with_driver_cookies(driver, pdf_url)
-        except (urllib.error.URLError, OSError) as exc:
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            _log(f"Reports[{facility_id}]: PDF download failed: {exc}")
             _close_extra_windows(driver, baseline_handles)
             return {"ok": False, "error": f"Couldn't download the generated PDF ({exc})."}
 

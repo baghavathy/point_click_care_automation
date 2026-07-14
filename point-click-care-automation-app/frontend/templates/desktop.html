@@ -47,7 +47,10 @@
       </div>
 
       <nav class="sidebar-nav">
-        <button id="nav-reports-btn" class="sidebar-nav-item" title="Open Administration Record report setup for the selected facility">
+        <button id="nav-launch-btn" class="sidebar-nav-item" title="Launch the selected facility's site for manual use">
+          <span class="nav-icon">▶</span> Launch
+        </button>
+        <button id="nav-reports-btn" class="sidebar-nav-item" title="Launch (if needed) and go straight to the Administration Record report for the selected facility">
           <span class="nav-icon">📊</span> Reports
         </button>
         <button id="nav-results-btn" class="sidebar-nav-item" title="View generated reports">
@@ -60,10 +63,21 @@
 
     <!-- ============ MAIN ============ -->
     <main class="main">
-      <!-- Top bar: active PCC sessions + signed-in Gateway user -->
+      <!-- Top bar: facility picker + active PCC sessions + signed-in Gateway user -->
       <header class="topbar">
-        <div class="topbar-title">Active sessions</div>
+        <div class="topbar-left">
+          <div class="facility-picker">
+            <div class="search-box facility-search-box">
+              <span class="search-icon">🔍</span>
+              <input type="text" id="facility-search" placeholder="Search &amp; select a facility…" autocomplete="off" />
+              <button id="facility-clear" class="search-clear hidden" title="Clear">✕</button>
+            </div>
+            <button id="refresh-btn" class="ghost" title="Refresh facilities">↻</button>
+            <div id="facility-dropdown" class="facility-dropdown hidden"></div>
+          </div>
+        </div>
         <div class="topbar-right">
+          <div class="topbar-title">Active sessions</div>
           <div id="sessions-bar" class="sessions-bar">
             <span class="no-sessions" id="no-sessions">No open sessions</span>
           </div>
@@ -72,25 +86,20 @@
         </div>
       </header>
 
-      <!-- Facilities: search & select, then launch -->
-      <section id="facilities-section" class="facilities-section">
-        <div class="facilities-label">Facilities</div>
-        <div class="facility-picker">
-          <div class="search-box facility-search-box">
-            <span class="search-icon">🔍</span>
-            <input type="text" id="facility-search" placeholder="Search &amp; select a facility…" autocomplete="off" />
-            <button id="facility-clear" class="search-clear hidden" title="Clear">✕</button>
-          </div>
-          <button id="refresh-btn" class="ghost" title="Refresh facilities">↻</button>
-          <div id="facility-dropdown" class="facility-dropdown hidden"></div>
+      <!-- Default state: nothing chosen yet -->
+      <section id="empty-view" class="view">
+        <div class="empty-state">
+          <h2>Select a facility above</h2>
+          <p>Then choose <b>Launch</b> to open it for manual use, or <b>Reports</b> to go straight
+            to the Administration Record report — each works on its own; you don't need to do one
+            before the other.</p>
         </div>
+      </section>
 
-        <div id="detail-empty" class="empty-state">
-          <p>Search and select a facility above to see its login details and launch it.</p>
-        </div>
-
-        <div id="detail-card" class="card hidden facility-detail-card">
-          <h2 id="d-name"></h2>
+      <!-- Launch: just opens the facility's site for the operator to use manually -->
+      <section id="launch-view" class="view hidden">
+        <div class="admin-record-header"><h2 id="d-name"></h2></div>
+        <div class="card facility-detail-card">
           <div class="meta-grid">
             <div><span class="lbl">Site URL</span><span id="d-url"></span></div>
             <div><span class="lbl">Username</span><span id="d-user"></span></div>
@@ -107,8 +116,8 @@
            filled here then submitted on the live PCC window via Selenium. -->
       <section id="admin-record-view" class="view hidden">
         <div class="admin-record-header">
-          <button id="ar-back-btn" class="ghost" title="Back to Facilities">&larr; Back</button>
-          <h2>Administration Record Report Setup</h2>
+          <button id="ar-back-btn" class="ghost" title="Back">&larr; Back</button>
+          <h2>Administration Record Report Setup — <span id="ar-facility-name"></span></h2>
         </div>
 
         <div class="card">
@@ -209,7 +218,7 @@
            Run Report lands here once PCC finishes rendering it. -->
       <section id="results-view" class="view hidden">
         <div class="admin-record-header">
-          <button id="results-back-btn" class="ghost" title="Back to Facilities">&larr; Back</button>
+          <button id="results-back-btn" class="ghost" title="Back">&larr; Back</button>
           <h2>Results</h2>
         </div>
 
