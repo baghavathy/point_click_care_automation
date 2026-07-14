@@ -229,13 +229,17 @@ def api_report_result_file(result_id: str):
     owner_id = cloud.user.get("id") if cloud.user else None
     if not cloud.is_admin and entry.get("owner_id") != owner_id:
         return jsonify({"error": "Not found."}), 404
-    path = reportstore.get_pdf_path(result_id)
+    path = reportstore.get_file_path(result_id)
     if not path:
-        return jsonify({"error": "The saved PDF is missing from disk."}), 404
-    # as_attachment=False + a PDF mimetype: the browser's own native PDF
-    # viewer opens it inline, rather than forcing a download prompt.
-    safe_name = f"{entry['facility_name']} - {entry['period_label']}.pdf".replace("/", "-")
-    return send_from_directory(path.parent, path.name, mimetype="application/pdf",
+        return jsonify({"error": "The saved file is missing from disk."}), 404
+    is_html = entry.get("kind") == "html"
+    # as_attachment=False: the browser opens it inline (native PDF viewer for
+    # a real PDF; a plain HTML view for the HTML fallback) instead of forcing
+    # a download prompt.
+    ext = "html" if is_html else "pdf"
+    safe_name = f"{entry['facility_name']} - {entry['period_label']}.{ext}".replace("/", "-")
+    return send_from_directory(path.parent, path.name,
+                                mimetype="text/html" if is_html else "application/pdf",
                                 as_attachment=False, download_name=safe_name)
 
 

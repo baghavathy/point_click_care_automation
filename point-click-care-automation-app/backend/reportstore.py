@@ -36,12 +36,17 @@ def _save_index(entries: list[dict[str, Any]]) -> None:
 
 
 def add_result(*, owner_id: Any, facility_id: int, facility_name: str, report_name: str,
-               period_label: str, generated_at: str, pdf_bytes: bytes) -> dict[str, Any]:
-    """Save ``pdf_bytes`` to disk and record it in the index. Returns the new entry."""
+               period_label: str, generated_at: str, file_bytes: bytes,
+               kind: str = "pdf") -> dict[str, Any]:
+    """Save ``file_bytes`` to disk and record it in the index. Returns the new
+    entry. ``kind`` is "pdf" (the normal case) or "html" — a fallback capture
+    used when we couldn't fetch real PDF bytes and saved the report page's raw
+    HTML instead, so it isn't lost outright (needs manual PDF conversion)."""
     _ensure_dirs()
     result_id = uuid.uuid4().hex[:16]
-    filename = f"{result_id}.pdf"
-    (FILES_DIR / filename).write_bytes(pdf_bytes)
+    ext = "html" if kind == "html" else "pdf"
+    filename = f"{result_id}.{ext}"
+    (FILES_DIR / filename).write_bytes(file_bytes)
     entry = {
         "id": result_id,
         "owner_id": owner_id,
@@ -51,7 +56,8 @@ def add_result(*, owner_id: Any, facility_id: int, facility_name: str, report_na
         "period_label": period_label,
         "generated_at": generated_at,
         "filename": filename,
-        "size_bytes": len(pdf_bytes),
+        "kind": kind,
+        "size_bytes": len(file_bytes),
     }
     entries = _load_index()
     entries.append(entry)
@@ -74,7 +80,7 @@ def get_result(result_id: str) -> Optional[dict[str, Any]]:
     return None
 
 
-def get_pdf_path(result_id: str) -> Optional[Path]:
+def get_file_path(result_id: str) -> Optional[Path]:
     entry = get_result(result_id)
     if not entry:
         return None

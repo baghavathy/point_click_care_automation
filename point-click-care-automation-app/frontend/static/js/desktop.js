@@ -342,11 +342,14 @@ async function loadResults() {
   empty.classList.toggle("hidden", results.length > 0);
   for (const r of results) {
     const when = new Date(r.generated_at).toLocaleString();
+    const isHtml = r.kind === "html";
     const row = document.createElement("div");
     row.className = "result-row";
     row.innerHTML =
       `<div class="result-main">` +
-      `<div class="result-title">${escapeHtml(r.facility_name)} — ${escapeHtml(r.report_name)}</div>` +
+      `<div class="result-title">${escapeHtml(r.facility_name)} — ${escapeHtml(r.report_name)}` +
+      (isHtml ? ` <span class="result-badge" title="Couldn't fetch the real PDF — this is the report page's HTML, needs manual PDF conversion">HTML fallback</span>` : "") +
+      `</div>` +
       `<div class="result-sub">${escapeHtml(r.period_label)} · generated ${escapeHtml(when)}</div>` +
       `</div>` +
       `<button class="ghost result-view-btn">View</button>`;

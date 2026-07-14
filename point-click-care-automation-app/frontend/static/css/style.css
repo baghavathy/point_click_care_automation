@@ -158,6 +158,10 @@ body {
 .result-row:last-child { border-bottom: none; }
 .result-title { font-weight: 600; color: var(--text); font-size: 14px; }
 .result-sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.result-badge {
+  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
+  background: #fef3c7; color: #92400e; border-radius: 6px; padding: 2px 6px; margin-left: 6px;
+}
 
 /* top bar */
 .topbar {

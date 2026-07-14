@@ -20,10 +20,9 @@ into the session in addition to the profile-level proxy.
 """
 from __future__ import annotations
 
+import base64
 import threading
 import time
-import urllib.error
-import urllib.request
 from typing import Any, Optional
 
 import pyotp
@@ -1425,31 +1424,66 @@ def _close_extra_windows(driver, baseline_handles: set) -> None:
     _activate_pcc_window(driver)
 
 
-def _download_pdf_with_driver_cookies(driver, url: str) -> bytes:
-    """Fetch the PDF's real bytes over plain HTTP(S), replaying the live
-    session's cookies — this is what actually gives us a searchable PDF (real
-    text layer, as PCC generated it) rather than a screenshot/print of the
-    browser's built-in PDF viewer. ``driver`` must already be focused on a
-    window whose origin matches ``url`` so the cookies are the right ones.
+# Runs INSIDE the page via execute_async_script — a plain Python-side request
+# (even one replaying the session's cookies) got a 403 from PCC in practice,
+# almost certainly because it bypassed the configured US proxy entirely and
+# hit PCC from a different, untrusted IP (the whole reason this app routes
+# Firefox through a proxy in the first place). Fetching through the browser's
+# own fetch() uses the exact cookies/proxy/TLS+User-Agent fingerprint that
+# already successfully rendered the PDF, sidestepping that completely.
+_FETCH_URL_AS_BASE64_JS = r"""
+var url = arguments[0];
+var callback = arguments[arguments.length - 1];
+fetch(url, {credentials: 'include'})
+  .then(function(resp) {
+    if (!resp.ok) { callback({ok: false, status: resp.status}); return null; }
+    return resp.arrayBuffer();
+  })
+  .then(function(buf) {
+    if (!buf) return;
+    var bytes = new Uint8Array(buf);
+    var binary = '';
+    var chunk = 0x8000;
+    for (var i = 0; i < bytes.length; i += chunk) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+    }
+    callback({ok: true, base64: btoa(binary)});
+  })
+  .catch(function(err) { callback({ok: false, error: String(err)}); });
+"""
 
-    Raises ValueError if the response isn't actually a PDF (e.g. the session
-    expired mid-download and we got an HTML login page back instead) — better
-    to fail loudly here than silently save garbage into Results.
-    """
-    cookies = driver.get_cookies()
-    cookie_header = "; ".join(f"{c['name']}={c['value']}" for c in cookies)
-    origin = "/".join(url.split("/", 3)[:3])  # scheme://host
-    req = urllib.request.Request(url, headers={
-        "Cookie": cookie_header,
-        "User-Agent": "GatewayPCC-Desktop/1.0",
-        "Accept": "application/pdf,*/*",
-        "Referer": origin + "/",
-    })
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        data = resp.read()
+
+def _fetch_pdf_bytes_via_browser(driver, url: str, timeout: int = 90) -> bytes:
+    """Fetch the PDF's real bytes (a genuine text layer, not a screenshot) by
+    running fetch() inside the already-authenticated page itself, rather than
+    a separate out-of-band Python-side request. Raises ValueError if the
+    fetch failed or didn't come back as a PDF (e.g. a stale/expired session)."""
+    try:
+        driver.set_script_timeout(timeout)
+        result = driver.execute_async_script(_FETCH_URL_AS_BASE64_JS, url)
+    except WebDriverException as exc:
+        raise ValueError(f"in-browser fetch errored ({exc.__class__.__name__})") from exc
+    if not result or not result.get("ok"):
+        raise ValueError(f"in-browser fetch failed (status={(result or {}).get('status')}, "
+                          f"error={(result or {}).get('error')})")
+    data = base64.b64decode(result["base64"])
     if not data.startswith(b"%PDF"):
         raise ValueError(f"response wasn't a PDF (first bytes: {data[:40]!r})")
     return data
+
+
+def _capture_page_html_fallback(driver) -> Optional[bytes]:
+    """Last-resort fallback when we can't get real PDF bytes at all: grab the
+    current page's raw HTML so the report isn't lost outright. Not guaranteed
+    to be a clean, print-ready document — PCC's own PDF viewer for this page
+    may render via canvas rather than semantic markup — but it gives the
+    operator something to work with (and convert to PDF manually) instead of
+    nothing."""
+    try:
+        html = driver.execute_script("return document.documentElement.outerHTML;")
+    except WebDriverException:
+        return None
+    return html.encode("utf-8") if html else None
 
 
 def run_administration_record_report(facility_id: int, params: dict,
@@ -1460,16 +1494,19 @@ def run_administration_record_report(facility_id: int, params: dict,
 
       1. wait for the rendered PDF (PCC pops a resident-find.jsp loader window,
          then the PDF at getadminrecordreport.xhtml),
-      2. download the PDF's real bytes (searchable — a genuine text layer, not
-         a screenshot) using the live session's cookies,
+      2. fetch the PDF's real bytes (searchable — a genuine text layer, not a
+         screenshot) by running fetch() INSIDE that page, so the request goes
+         out with the exact same cookies/proxy/fingerprint that already
+         successfully rendered it (falls back to saving the page's raw HTML
+         if that still fails, so the report isn't lost outright),
       3. close both popped windows,
-      4. save the PDF + its metadata to the local Results store, and
+      4. save the result + its metadata to the local Results store, and
       5. sign out of PCC (via ``logout_settings``, the same selectors the
          Logout button uses) so the session doesn't sit open unattended.
 
     Re-navigates to the report setup page first if the session isn't already
     sitting on it (e.g. time passed, or the operator clicked elsewhere). Auto-
-    logout (step 5) only runs after a successful download — on any failure the
+    logout (step 5) only runs after a successful save — on any failure the
     session is left open so the operator can see what happened.
     """
     sess = _sessions.get(facility_id)
@@ -1508,12 +1545,17 @@ def run_administration_record_report(facility_id: int, params: dict,
             return {"ok": False, "error": "Timed out waiting for the report to finish generating."}
 
         _log(f"Reports[{facility_id}]: report ready at {pdf_url}")
+        kind = "pdf"
         try:
-            pdf_bytes = _download_pdf_with_driver_cookies(driver, pdf_url)
-        except (urllib.error.URLError, OSError, ValueError) as exc:
-            _log(f"Reports[{facility_id}]: PDF download failed: {exc}")
-            _close_extra_windows(driver, baseline_handles)
-            return {"ok": False, "error": f"Couldn't download the generated PDF ({exc})."}
+            file_bytes = _fetch_pdf_bytes_via_browser(driver, pdf_url)
+        except ValueError as exc:
+            _log(f"Reports[{facility_id}]: PDF fetch failed ({exc}); "
+                 f"falling back to saving the page's HTML.")
+            file_bytes = _capture_page_html_fallback(driver)
+            if not file_bytes:
+                _close_extra_windows(driver, baseline_handles)
+                return {"ok": False, "error": f"Couldn't download the generated PDF ({exc})."}
+            kind = "html"
 
         _close_extra_windows(driver, baseline_handles)
 
@@ -1524,9 +1566,14 @@ def run_administration_record_report(facility_id: int, params: dict,
             report_name="Administration Record",
             period_label=_report_period_label(params),
             generated_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            pdf_bytes=pdf_bytes,
+            file_bytes=file_bytes,
+            kind=kind,
         )
-        _log(f"Reports[{facility_id}]: saved report {entry['id']} ({entry['size_bytes']} bytes).")
+        if kind == "html":
+            _log(f"Reports[{facility_id}]: saved HTML fallback {entry['id']} "
+                 f"({entry['size_bytes']} bytes) — convert to PDF manually.")
+        else:
+            _log(f"Reports[{facility_id}]: saved report {entry['id']} ({entry['size_bytes']} bytes).")
     except WebDriverException as exc:
         return {"ok": False, "error": f"Session is no longer available ({exc.__class__.__name__})."}
     finally:
@@ -1541,5 +1588,8 @@ def run_administration_record_report(facility_id: int, params: dict,
             _log(f"Reports[{facility_id}]: auto-logout after report failed: "
                  f"{logout_result.get('error')}")
 
-    return {"ok": True, "message": "Report generated, saved to Results, and signed out.",
-            "result": entry}
+    message = ("Couldn't fetch the PDF directly, so the report page was saved as HTML instead "
+                "(see Results — you'll need to convert it to PDF manually). Signed out."
+                if entry and entry.get("kind") == "html" else
+                "Report generated, saved to Results, and signed out.")
+    return {"ok": True, "message": message, "result": entry}
