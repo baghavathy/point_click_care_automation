@@ -50,6 +50,9 @@
         <button id="nav-reports-btn" class="sidebar-nav-item" title="Open Administration Record report setup for the selected facility">
           <span class="nav-icon">📊</span> Reports
         </button>
+        <button id="nav-results-btn" class="sidebar-nav-item" title="View generated reports">
+          <span class="nav-icon">🗂</span> Results
+        </button>
       </nav>
 
       <div class="powered-by">Powered by Epicle, Inc</div>
@@ -199,6 +202,22 @@
             <button id="ar-run-btn" class="primary">Run Report</button>
           </div>
           <div id="ar-run-status" class="status"></div>
+        </div>
+      </section>
+
+      <!-- Results: generated report PDFs, saved on this machine. Each run of
+           Run Report lands here once PCC finishes rendering it. -->
+      <section id="results-view" class="view hidden">
+        <div class="admin-record-header">
+          <button id="results-back-btn" class="ghost" title="Back to Facilities">&larr; Back</button>
+          <h2>Results</h2>
+        </div>
+
+        <div class="card">
+          <div id="results-list" class="results-list"><!-- populated by JS --></div>
+          <div id="results-empty" class="empty-state hidden">
+            <p>No reports generated yet. Open a facility's Reports, run one, and it'll show up here.</p>
+          </div>
         </div>
       </section>
     </main>

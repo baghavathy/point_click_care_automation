@@ -99,6 +99,14 @@ async function showStoredTotp(facilityId) {
   } catch { /* leave default text */ }
 }
 
+// ---------------------------------------------------------------------------
+// The three mutually-exclusive main-view sections.
+// ---------------------------------------------------------------------------
+const SECTIONS = ["facilities-section", "admin-record-view", "results-view"];
+function showSection(id) {
+  for (const s of SECTIONS) $(s).classList.toggle("hidden", s !== id);
+}
+
 $("nav-reports-btn").onclick = async () => {
   if (!selectedFacility) {
     toast("Select a facility above first.", false);
@@ -109,12 +117,17 @@ $("nav-reports-btn").onclick = async () => {
     const r = await api.post(`/api/facilities/${selectedFacility.id}/reports/administration-record`);
     applyAdminRecordOptions(r.options);
     toast(r.message || "Opened.", true);
-    $("facilities-section").classList.add("hidden");
-    $("admin-record-view").classList.remove("hidden");
+    showSection("admin-record-view");
   } catch (err) {
     toast(err.message, false);
   }
 };
+
+$("nav-results-btn").onclick = async () => {
+  await loadResults();
+  showSection("results-view");
+};
+$("results-back-btn").onclick = () => showSection("facilities-section");
 
 // ---------------------------------------------------------------------------
 // Administration Record report form — native mirror of PCC's report setup
@@ -242,7 +255,9 @@ async function runAdministrationRecordReport() {
   };
   const s = $("ar-run-status");
   s.className = "status";
-  s.textContent = "Running report on the PCC window…";
+  s.textContent = "Running report on the PCC window… this generates the PDF, saves it to " +
+    "Results, and signs out — it can take a little while.";
+  $("ar-run-btn").disabled = true;
   try {
     const r = await api.post(
       `/api/facilities/${selectedFacility.id}/reports/administration-record/run`,
@@ -250,9 +265,16 @@ async function runAdministrationRecordReport() {
     );
     s.className = "status ok";
     s.textContent = r.message || "Report is running.";
+    if (r.result) {
+      refreshSessions(); // the facility's session just got signed out
+      await loadResults();
+      showSection("results-view");
+    }
   } catch (err) {
     s.className = "status err";
     s.textContent = err.message;
+  } finally {
+    $("ar-run-btn").disabled = false;
   }
 }
 
@@ -275,14 +297,42 @@ function initAdminRecordForm() {
     e.preventDefault();
     $("ar-templates").querySelectorAll("input[type=checkbox]").forEach((c) => (c.checked = false));
   };
-  $("ar-back-btn").onclick = () => {
-    $("admin-record-view").classList.add("hidden");
-    $("facilities-section").classList.remove("hidden");
-  };
+  $("ar-back-btn").onclick = () => showSection("facilities-section");
   $("ar-run-btn").onclick = runAdministrationRecordReport;
 }
 
 initAdminRecordForm();
+
+// ---------------------------------------------------------------------------
+// Results — generated report PDFs, saved locally on this machine.
+// ---------------------------------------------------------------------------
+async function loadResults() {
+  const box = $("results-list");
+  const empty = $("results-empty");
+  let results = [];
+  try {
+    results = await api.get("/api/reports/results");
+  } catch (err) {
+    toast(err.message, false);
+    return;
+  }
+  box.innerHTML = "";
+  empty.classList.toggle("hidden", results.length > 0);
+  for (const r of results) {
+    const when = new Date(r.generated_at).toLocaleString();
+    const row = document.createElement("div");
+    row.className = "result-row";
+    row.innerHTML =
+      `<div class="result-main">` +
+      `<div class="result-title">${escapeHtml(r.facility_name)} — ${escapeHtml(r.report_name)}</div>` +
+      `<div class="result-sub">${escapeHtml(r.period_label)} · generated ${escapeHtml(when)}</div>` +
+      `</div>` +
+      `<button class="ghost result-view-btn">View</button>`;
+    row.querySelector(".result-view-btn").onclick = () =>
+      window.open(`/api/reports/results/${r.id}/file`, "_blank");
+    box.appendChild(row);
+  }
+}
 
 $("launch-btn").onclick = async () => {
   if (!selectedFacility) return;

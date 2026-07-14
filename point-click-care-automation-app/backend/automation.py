@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import threading
 import time
+import urllib.error
+import urllib.request
 from typing import Any, Optional
 
 import pyotp
@@ -34,7 +36,7 @@ from selenium.webdriver.firefox.options import Options
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
-from . import config, proxyrelay
+from . import config, proxyrelay, reportstore
 
 
 def _log(msg: str) -> None:
@@ -1298,13 +1300,110 @@ return {ok: true};
 """
 
 
-def run_administration_record_report(facility_id: int, params: dict) -> dict[str, Any]:
+# Clicking Run Report makes PCC pop TWO windows: a resident-find.jsp loader
+# while the report renders server-side, then the actual rendered PDF at
+# getadminrecordreport.xhtml?fileId=... (sometimes reusing the same window,
+# sometimes a further new one) — we only care about spotting the PDF one.
+ADMIN_RECORD_PDF_URL_MARKER = "getadminrecordreport.xhtml"
+
+MONTH_NAMES = ["", "January", "February", "March", "April", "May", "June", "July",
+               "August", "September", "October", "November", "December"]
+
+
+def _report_period_label(params: dict) -> str:
+    """Human label for the Results list, e.g. "April 2026" or "Week of 04/01/2026"."""
+    params = params or {}
+    weekly_start = params.get("weekly_start")
+    if weekly_start:
+        return f"Week of {weekly_start}"
+    month, year = params.get("month"), params.get("year")
+    if month and year:
+        try:
+            return f"{MONTH_NAMES[int(month)]} {year}"
+        except (ValueError, IndexError):
+            pass
+    return time.strftime("%Y-%m-%d")
+
+
+def _wait_for_report_pdf_url(driver, baseline_handles: set, timeout: int = 120) -> Optional[str]:
+    """Poll every window opened after Run Report was clicked until one of them
+    is sitting on the rendered PDF. Returns that window's URL (driver stays
+    focused on it) or None on timeout. PCC's report render can take a while for
+    a large facility/date range, hence the generous timeout."""
+    end = time.time() + timeout
+    while time.time() < end:
+        try:
+            handles = driver.window_handles
+        except WebDriverException:
+            return None
+        for h in handles:
+            if h in baseline_handles:
+                continue
+            try:
+                driver.switch_to.window(h)
+                url = driver.current_url
+            except WebDriverException:
+                continue
+            if ADMIN_RECORD_PDF_URL_MARKER in url:
+                return url
+        time.sleep(1)
+    return None
+
+
+def _close_extra_windows(driver, baseline_handles: set) -> None:
+    """Close every window opened after ``baseline_handles`` was captured (the
+    resident-find.jsp loader and the PDF window) and refocus the main PCC tab."""
+    try:
+        handles = driver.window_handles
+    except WebDriverException:
+        return
+    for h in handles:
+        if h in baseline_handles:
+            continue
+        try:
+            driver.switch_to.window(h)
+            driver.close()
+        except WebDriverException:
+            pass
+    _activate_pcc_window(driver)
+
+
+def _download_pdf_with_driver_cookies(driver, url: str) -> bytes:
+    """Fetch the PDF's real bytes over plain HTTP(S), replaying the live
+    session's cookies — this is what actually gives us a searchable PDF (real
+    text layer, as PCC generated it) rather than a screenshot/print of the
+    browser's built-in PDF viewer. ``driver`` must already be focused on a
+    window whose origin matches ``url`` so the cookies are the right ones."""
+    cookies = driver.get_cookies()
+    cookie_header = "; ".join(f"{c['name']}={c['value']}" for c in cookies)
+    req = urllib.request.Request(url, headers={
+        "Cookie": cookie_header,
+        "User-Agent": "GatewayPCC-Desktop/1.0",
+        "Accept": "application/pdf,*/*",
+    })
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        return resp.read()
+
+
+def run_administration_record_report(facility_id: int, params: dict,
+                                      logout_settings: Optional[dict] = None) -> dict[str, Any]:
     """Fill the real Administration Record report form (on the already-open PCC
-    session) with ``params`` and click the real Run Report button — the report
-    then renders in the live PCC window exactly as if a person had done it.
+    session) with ``params``, click the real Run Report button, then capture the
+    result end-to-end exactly like an operator would:
+
+      1. wait for the rendered PDF (PCC pops a resident-find.jsp loader window,
+         then the PDF at getadminrecordreport.xhtml),
+      2. download the PDF's real bytes (searchable — a genuine text layer, not
+         a screenshot) using the live session's cookies,
+      3. close both popped windows,
+      4. save the PDF + its metadata to the local Results store, and
+      5. sign out of PCC (via ``logout_settings``, the same selectors the
+         Logout button uses) so the session doesn't sit open unattended.
 
     Re-navigates to the report setup page first if the session isn't already
-    sitting on it (e.g. time passed, or the operator clicked elsewhere).
+    sitting on it (e.g. time passed, or the operator clicked elsewhere). Auto-
+    logout (step 5) only runs after a successful download — on any failure the
+    session is left open so the operator can see what happened.
     """
     sess = _sessions.get(facility_id)
     if sess is None:
@@ -1314,6 +1413,7 @@ def run_administration_record_report(facility_id: int, params: dict) -> dict[str
 
     if lock is not None and not lock.acquire(timeout=10):
         return {"ok": False, "error": "Session is busy — try again in a moment."}
+    entry = None
     try:
         _activate_pcc_window(driver)
         if not _on_administration_record_page(driver):
@@ -1330,19 +1430,48 @@ def run_administration_record_report(facility_id: int, params: dict) -> dict[str
         if not result or not result.get("ok"):
             return {"ok": False, "error": (result or {}).get("error") or "Couldn't fill the report form."}
 
+        baseline_handles = set(driver.window_handles)
         _log(f"Reports[{facility_id}]: running Administration Record report, params={params}")
         if not _find_and_click(driver, "#runButton", ["Run Report"]):
             return {"ok": False, "error": "Couldn't find the Run Report button."}
-        _activate_pcc_window(driver)
 
+        pdf_url = _wait_for_report_pdf_url(driver, baseline_handles)
+        if not pdf_url:
+            _close_extra_windows(driver, baseline_handles)
+            return {"ok": False, "error": "Timed out waiting for the report to finish generating."}
+
+        _log(f"Reports[{facility_id}]: report ready at {pdf_url}")
         try:
-            driver.execute_script("window.focus();")
-        except WebDriverException:
-            pass
+            pdf_bytes = _download_pdf_with_driver_cookies(driver, pdf_url)
+        except (urllib.error.URLError, OSError) as exc:
+            _close_extra_windows(driver, baseline_handles)
+            return {"ok": False, "error": f"Couldn't download the generated PDF ({exc})."}
 
-        return {"ok": True, "message": "Report is running — check the PCC window."}
+        _close_extra_windows(driver, baseline_handles)
+
+        entry = reportstore.add_result(
+            owner_id=sess.get("owner_id"),
+            facility_id=facility_id,
+            facility_name=sess.get("facility_name", ""),
+            report_name="Administration Record",
+            period_label=_report_period_label(params),
+            generated_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            pdf_bytes=pdf_bytes,
+        )
+        _log(f"Reports[{facility_id}]: saved report {entry['id']} ({entry['size_bytes']} bytes).")
     except WebDriverException as exc:
         return {"ok": False, "error": f"Session is no longer available ({exc.__class__.__name__})."}
     finally:
         if lock is not None:
             lock.release()
+
+    # Lock released above — logout_facility manages the session's lock itself,
+    # and a plain threading.Lock isn't reentrant, so this must happen after.
+    if logout_settings is not None:
+        logout_result = logout_facility(facility_id, logout_settings)
+        if not logout_result.get("ok"):
+            _log(f"Reports[{facility_id}]: auto-logout after report failed: "
+                 f"{logout_result.get('error')}")
+
+    return {"ok": True, "message": "Report generated, saved to Results, and signed out.",
+            "result": entry}

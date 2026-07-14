@@ -17,7 +17,7 @@ import webbrowser
 
 from flask import Flask, jsonify, render_template, request, send_from_directory
 
-from . import automation, config
+from . import automation, config, reportstore
 from .cloud import CloudClient, CloudError
 
 app = Flask(
@@ -192,10 +192,44 @@ def api_open_administration_record(facility_id: int):
 
 @app.post("/api/facilities/<int:facility_id>/reports/administration-record/run")
 @login_required
+@_cloud_call
 def api_run_administration_record(facility_id: int):
     params = request.get_json(force=True, silent=True) or {}
-    result = automation.run_administration_record_report(facility_id, params)
+    # Non-secret logout selectors/delays — same source the Logout button uses —
+    # so the report run can sign the session out itself once the PDF is saved.
+    logout_settings = cloud.get("/api/settings")
+    result = automation.run_administration_record_report(facility_id, params, logout_settings)
     return jsonify(result), (200 if result.get("ok") else 400)
+
+
+# --------------------------------------------------------------------------
+# Results — generated report PDFs, saved locally on this machine only
+# --------------------------------------------------------------------------
+@app.get("/api/reports/results")
+@login_required
+def api_list_report_results():
+    owner_id = cloud.user.get("id") if cloud.user else None
+    results = reportstore.list_results(None if cloud.is_admin else owner_id)
+    return jsonify(results)
+
+
+@app.get("/api/reports/results/<result_id>/file")
+@login_required
+def api_report_result_file(result_id: str):
+    entry = reportstore.get_result(result_id)
+    if not entry:
+        return jsonify({"error": "Not found."}), 404
+    owner_id = cloud.user.get("id") if cloud.user else None
+    if not cloud.is_admin and entry.get("owner_id") != owner_id:
+        return jsonify({"error": "Not found."}), 404
+    path = reportstore.get_pdf_path(result_id)
+    if not path:
+        return jsonify({"error": "The saved PDF is missing from disk."}), 404
+    # as_attachment=False + a PDF mimetype: the browser's own native PDF
+    # viewer opens it inline, rather than forcing a download prompt.
+    safe_name = f"{entry['facility_name']} - {entry['period_label']}.pdf".replace("/", "-")
+    return send_from_directory(path.parent, path.name, mimetype="application/pdf",
+                                as_attachment=False, download_name=safe_name)
 
 
 def main() -> None:
