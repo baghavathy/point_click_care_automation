@@ -1128,10 +1128,70 @@ def _on_administration_record_page(driver) -> bool:
         return False
 
 
+# JS that reads the REAL "frmData" Administration Record form as rendered by PCC
+# for this specific facility — units, floors, report types, the report-template
+# checklist, and the sort-by dropdowns — so our mirrored screen always matches
+# what a person would actually see (unit/floor lists and the template catalog
+# differ per facility), instead of a fixed, facility-specific guess.
+_SCRAPE_ADMIN_RECORD_FORM_JS = r"""
+const f = document.forms['frmData'];
+if (!f) return {ok: false, error: "Report form not found on the current page."};
+
+function selectOptions(name) {
+  const el = f.elements[name];
+  if (!el || !el.options) return [];
+  return Array.from(el.options).map(o => ({
+    value: o.value,
+    label: (o.textContent || '').trim(),
+    selected: !!o.selected,
+  }));
+}
+
+function checkboxOptions(name) {
+  const nodes = f.elements[name];
+  if (!nodes) return [];
+  const list = nodes.length !== undefined ? Array.from(nodes) : [nodes];
+  return list.map(el => {
+    let label = '';
+    const lbl = el.closest ? el.closest('label') : null;
+    if (lbl) label = lbl.textContent;
+    else if (el.parentElement) label = el.parentElement.textContent;
+    return { value: el.value, label: (label || el.value).trim(), checked: !!el.checked };
+  });
+}
+
+return {
+  ok: true,
+  units: selectOptions('ESOLunitid'),
+  floors: selectOptions('ESOLfloorid'),
+  report_types: selectOptions('ESOLreporttype'),
+  templates: checkboxOptions('ESOLreportTemplate'),
+  sort_residents_by: selectOptions('sortResidentsBy'),
+  sort_orders_by: selectOptions('sortOrdersBy'),
+};
+"""
+
+
+def _scrape_administration_record_form(driver, facility_id: int) -> dict[str, Any]:
+    """Best-effort read of the live form's real options. Returns {} (never
+    raises) if the page shape isn't what we expect — the frontend falls back
+    to its own static defaults in that case."""
+    try:
+        result = driver.execute_script(_SCRAPE_ADMIN_RECORD_FORM_JS)
+    except WebDriverException:
+        return {}
+    if not result or not result.get("ok"):
+        _log(f"Reports[{facility_id}]: couldn't read live form options"
+             f" ({(result or {}).get('error', 'unknown')}); frontend will use defaults.")
+        return {}
+    return result
+
+
 def open_administration_record(facility_id: int) -> dict[str, Any]:
     """Drive an already-open, already-signed-in PCC session to
     Reports -> Clinical -> Administration Record (under eMAR), landing on that
-    report's parameter/setup screen.
+    report's parameter/setup screen, and read back the real form options so our
+    mirrored screen matches exactly what PCC renders for this facility.
 
     Each step smart-waits for the page to actually finish loading before
     hunting for the next control (see ``_wait_page_ready`` / ``_find_and_click``)
@@ -1157,8 +1217,10 @@ def open_administration_record(facility_id: int) -> dict[str, Any]:
         except WebDriverException:
             pass
 
+        options = _scrape_administration_record_form(driver, facility_id)
         _log(f"Reports[{facility_id}]: Administration Record report setup opened.")
-        return {"ok": True, "message": "Opened Administration Record report setup."}
+        return {"ok": True, "message": "Opened Administration Record report setup.",
+                "options": options}
     except WebDriverException as exc:
         return {"ok": False, "error": f"Session is no longer available ({exc.__class__.__name__})."}
     finally:

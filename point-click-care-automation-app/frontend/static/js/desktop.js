@@ -104,9 +104,10 @@ $("nav-reports-btn").onclick = async () => {
     toast("Select a facility above first.", false);
     return;
   }
-  toast(`Opening Reports for ${selectedFacility.name}…`, true);
+  toast(`Opening Reports for ${selectedFacility.name}… (Reports → Clinical → Administration Record)`, true);
   try {
     const r = await api.post(`/api/facilities/${selectedFacility.id}/reports/administration-record`);
+    applyAdminRecordOptions(r.options);
     toast(r.message || "Opened.", true);
     $("facilities-section").classList.add("hidden");
     $("admin-record-view").classList.remove("hidden");
@@ -117,8 +118,12 @@ $("nav-reports-btn").onclick = async () => {
 
 // ---------------------------------------------------------------------------
 // Administration Record report form — native mirror of PCC's report setup
-// page. Filled here, then applied to the real PCC page (and Run Report
-// clicked there) via /reports/administration-record/run.
+// page. Every field (Unit, Floor, Report Type, the template checklist, the
+// Sort By dropdowns) is re-populated from the LIVE PCC page each time Reports
+// is opened (see applyAdminRecordOptions) since those lists are specific to
+// each facility. The values below are only a fallback for the very first
+// paint, before any facility has been opened, or if a scrape ever comes back
+// empty (older PCC page shape, etc).
 // ---------------------------------------------------------------------------
 const AR_TEMPLATES = [
   { value: "271", label: "Diabetic Administration Record (DAR*)" },
@@ -137,15 +142,40 @@ const AR_TEMPLATES = [
   { value: "803", label: "zzzDiabetic Administration Record (DAR**)" },
 ];
 
-function populateAdminRecordTemplates() {
+function populateAdminRecordTemplates(list) {
   const box = $("ar-templates");
+  const source = Array.isArray(list) && list.length ? list : AR_TEMPLATES;
   box.innerHTML = "";
-  for (const t of AR_TEMPLATES) {
+  for (const t of source) {
     const label = document.createElement("label");
     label.className = "ar-template-item";
-    label.innerHTML = `<input type="checkbox" value="${t.value}"> ${escapeHtml(t.label)}`;
+    label.innerHTML =
+      `<input type="checkbox" value="${escapeHtml(t.value)}"${t.checked ? " checked" : ""}> ${escapeHtml(t.label)}`;
     box.appendChild(label);
   }
+}
+
+// Overwrites a <select>'s options from the live scrape; leaves the existing
+// (static fallback) options alone if the scrape didn't return anything for it.
+function populateSelect(selectEl, options) {
+  if (!Array.isArray(options) || options.length === 0) return;
+  selectEl.innerHTML = options
+    .map((o) => `<option value="${escapeHtml(o.value)}"${o.selected ? " selected" : ""}>${escapeHtml(o.label)}</option>`)
+    .join("");
+}
+
+// Called right after Reports -> Clinical -> Administration Record finishes
+// navigating on the live PCC session, with the real form's own options —
+// makes our mirrored screen match exactly what PCC would show a person here.
+function applyAdminRecordOptions(options) {
+  const opts = options || {};
+  populateSelect($("ar-unit"), opts.units);
+  populateSelect($("ar-floor"), opts.floors);
+  populateSelect($("ar-report-type"), opts.report_types);
+  populateAdminRecordTemplates(opts.templates);
+  populateSelect($("ar-sort-residents"), opts.sort_residents_by);
+  populateSelect($("ar-sort-orders"), opts.sort_orders_by);
+  toggleAdminRecordReportType();
 }
 
 function populateAdminRecordMonthYear() {
@@ -165,7 +195,11 @@ function populateAdminRecordMonthYear() {
 }
 
 function toggleAdminRecordReportType() {
-  const weekly = $("ar-report-type").value === "3208";
+  // Match by the selected option's own label rather than a hardcoded value id —
+  // report-type values now come live from PCC and aren't guaranteed stable.
+  const sel = $("ar-report-type");
+  const opt = sel.options[sel.selectedIndex];
+  const weekly = !!opt && /weekly/i.test(opt.textContent);
   $("ar-monthly-fields").classList.toggle("hidden", weekly);
   $("ar-weekly-fields").classList.toggle("hidden", !weekly);
 }

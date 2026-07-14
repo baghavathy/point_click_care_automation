@@ -208,7 +208,12 @@ def main() -> None:
     if config.HOST in ("127.0.0.1", "localhost"):
         threading.Timer(1.5, lambda: webbrowser.open(url)).start()
     try:
-        app.run(host=config.HOST, port=config.DESKTOP_PORT, debug=False)
+        # threaded=True: the Reports automation (open_administration_record /
+        # run_administration_record_report) can block for tens of seconds
+        # waiting on PCC's UI. Without this, Flask's dev server is
+        # single-threaded and that one request freezes EVERYTHING else in the
+        # app (facility list, session polling) until it finishes.
+        app.run(host=config.HOST, port=config.DESKTOP_PORT, debug=False, threaded=True)
     except OSError as exc:
         print(f"\nERROR: could not start on {url} ({exc}).")
         print("Port may be in use. Close other Gateway PCC windows, or set GATEWAY_PORT to a free port.")
