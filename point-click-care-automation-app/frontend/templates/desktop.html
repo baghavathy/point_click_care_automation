@@ -46,17 +46,12 @@
         </div>
       </div>
 
-      <div class="search-box">
-        <span class="search-icon">🔍</span>
-        <input type="text" id="search-input" placeholder="Search facilities…" autocomplete="off" />
-        <button id="search-clear" class="search-clear hidden" title="Clear">✕</button>
-      </div>
-      <div id="search-results" class="search-results hidden"></div>
+      <nav class="sidebar-nav">
+        <button id="nav-reports-btn" class="sidebar-nav-item" title="Open Administration Record report setup for the selected facility">
+          <span class="nav-icon">📊</span> Reports
+        </button>
+      </nav>
 
-      <div class="sidebar-section-label">My Clients &amp; Facilities</div>
-      <nav id="tree" class="tree"><!-- populated by JS --></nav>
-
-      <button id="refresh-btn" class="settings-btn">↻ Refresh</button>
       <div class="powered-by">Powered by Epicle, Inc</div>
     </aside>
 
@@ -74,27 +69,136 @@
         </div>
       </header>
 
-      <!-- Facility detail / launch view -->
-      <section id="detail-view" class="view">
-        <div id="detail-empty" class="empty-state">
-          <h2>Select a facility to launch</h2>
-          <p>Pick a location from the left sidebar to open its site and sign in
-            automatically with the stored credentials.</p>
-          <p>Facilities are managed for you in the Gateway PCC website. Click
-            <b>↻ Refresh</b> if a newly added one isn't showing yet.</p>
+      <!-- Facilities: search & select, then launch -->
+      <section id="facilities-section" class="facilities-section">
+        <div class="facilities-label">Facilities</div>
+        <div class="facility-picker">
+          <div class="search-box facility-search-box">
+            <span class="search-icon">🔍</span>
+            <input type="text" id="facility-search" placeholder="Search &amp; select a facility…" autocomplete="off" />
+            <button id="facility-clear" class="search-clear hidden" title="Clear">✕</button>
+          </div>
+          <button id="refresh-btn" class="ghost" title="Refresh facilities">↻</button>
+          <div id="facility-dropdown" class="facility-dropdown hidden"></div>
         </div>
-        <div id="detail-card" class="card hidden">
+
+        <div id="detail-empty" class="empty-state">
+          <p>Search and select a facility above to see its login details and launch it.</p>
+        </div>
+
+        <div id="detail-card" class="card hidden facility-detail-card">
           <h2 id="d-name"></h2>
           <div class="meta-grid">
-            <div><span class="lbl">Location</span><span id="d-location"></span></div>
             <div><span class="lbl">Site URL</span><span id="d-url"></span></div>
             <div><span class="lbl">Username</span><span id="d-user"></span></div>
             <div><span class="lbl">TOTP / 2FA</span><span id="d-totp"></span></div>
           </div>
           <div class="row">
-            <button id="launch-btn" class="primary big">▶ Launch &amp; Login</button>
+            <button id="launch-btn" class="primary">▶ Launch</button>
           </div>
           <div id="launch-status" class="status"></div>
+        </div>
+      </section>
+
+      <!-- Administration Record Report Setup: native mirror of the real PCC form,
+           filled here then submitted on the live PCC window via Selenium. -->
+      <section id="admin-record-view" class="view hidden">
+        <div class="admin-record-header">
+          <button id="ar-back-btn" class="ghost" title="Back to Facilities">&larr; Back</button>
+          <h2>Administration Record Report Setup</h2>
+        </div>
+
+        <div class="card">
+          <div class="form-grid">
+            <label>Resident Number
+              <input type="text" id="ar-client-number" placeholder="Leave blank for all residents" />
+            </label>
+            <label>Resident
+              <input type="text" id="ar-client-name" placeholder="Leave blank for all residents" />
+            </label>
+            <label>Unit
+              <select id="ar-unit">
+                <option value="110660">Central</option>
+                <option value="110661">East</option>
+                <option value="110662">Southwest</option>
+                <option value="110663">West</option>
+              </select>
+            </label>
+            <label>Floor
+              <select id="ar-floor">
+                <option value="-1" selected>All</option>
+                <option value="43519">1</option>
+              </select>
+            </label>
+            <label>Report Type
+              <select id="ar-report-type">
+                <option value="3065" selected>Monthly Reports</option>
+                <option value="3208">Weekly Reports</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="admin-record-templates">
+            <span class="lbl">Administration Record(s)</span>
+            <div id="ar-templates" class="ar-template-list"><!-- populated by JS --></div>
+            <div class="row">
+              <a href="#" id="ar-check-all">Check All</a>
+              <a href="#" id="ar-clear-all">Clear All</a>
+            </div>
+          </div>
+
+          <div id="ar-monthly-fields" class="form-grid">
+            <label>Month
+              <select id="ar-month"><!-- populated by JS --></select>
+            </label>
+            <label>Year
+              <select id="ar-year"><!-- populated by JS --></select>
+            </label>
+          </div>
+
+          <div id="ar-weekly-fields" class="form-grid hidden">
+            <label>Start Date
+              <input type="date" id="ar-start-date" />
+            </label>
+            <label>Show These Orders
+              <span class="row">
+                <label class="inline-radio"><input type="radio" name="ar-sort-order" value="All" checked /> All</label>
+                <label class="inline-radio"><input type="radio" name="ar-sort-order" value="S" /> On or after</label>
+              </span>
+            </label>
+            <label>Order Start Date
+              <input type="date" id="ar-order-start-date" disabled />
+            </label>
+          </div>
+
+          <div class="form-grid">
+            <label>Sort Residents By
+              <select id="ar-sort-residents">
+                <option value="client_name">Name</option>
+                <option value="location" selected>Location</option>
+              </select>
+            </label>
+            <label>Sort Orders By
+              <select id="ar-sort-orders">
+                <option value="schedule_type" selected>Schedule Type</option>
+                <option value="order_type">Order Type</option>
+                <option value="order_type_seq">Order Type Sequence</option>
+                <option value="order_description">Order Description</option>
+              </select>
+            </label>
+            <label class="switch-row" style="max-width:none;">
+              Nurse Admin Notes
+              <span class="switch">
+                <input type="checkbox" id="ar-nurse-notes" />
+                <span class="slider"></span>
+              </span>
+            </label>
+          </div>
+
+          <div class="row">
+            <button id="ar-run-btn" class="primary">Run Report</button>
+          </div>
+          <div id="ar-run-status" class="status"></div>
         </div>
       </section>
     </main>

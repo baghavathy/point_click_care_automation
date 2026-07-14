@@ -1006,3 +1006,281 @@ def session_info(facility_id: int) -> dict[str, Any]:
     except WebDriverException:
         _close_session(facility_id)
         return {"active": False}
+
+
+# --------------------------------------------------------------------------
+# Reports: navigate an already-signed-in session to a report's setup screen
+# --------------------------------------------------------------------------
+# PCC's Enterprise Reporting entry point — a plain link, stable across facilities.
+# Primary: the nav item's own id (#QTF_reportingTab). Fallback: its href, in case
+# the id ever changes. CSS_SELECTOR supports comma-separated alternatives natively.
+REPORTS_LINK_CSS = "#QTF_reportingTab > a, a[href*='enterprisereporting/listing.xhtml']"
+
+# The reporting catalog's tab bar (Recent / All / Enhanced / Admin / Clinical) is a
+# widget with a stable data-tab index per tab — Clinical is data-tab="2".
+CLINICAL_TAB_CSS = "a.mdl-tabs__tab[data-tab='2']"
+
+# The "Administration Record" report under the Clinical tab's eMAR section —
+# a plain report-listing link keyed by its catalog reportId (2177).
+ADMIN_RECORD_LINK_CSS = "a.reportList-title[href*='reportId=2177']"
+
+
+def _wait_page_ready(driver, timeout: int = 40) -> None:
+    """Best-effort smart wait: the page (and any jQuery ajax it kicked off) has
+    actually finished loading, before we go hunting for the next thing to click.
+
+    document.readyState alone is not enough for PCC — many of its screens finish
+    the *document* load long before their ajax-driven content (tabs, report
+    lists) has rendered, so we also wait out jQuery's in-flight request count
+    when jQuery is present. A short settle delay follows for post-ready
+    rendering (MDL tab activation, evergreen web-component upgrades).
+    """
+    try:
+        WebDriverWait(driver, timeout).until(
+            lambda d: d.execute_script(
+                "return document.readyState === 'complete' "
+                "&& (typeof jQuery === 'undefined' || jQuery.active === 0)"
+            )
+        )
+    except (TimeoutException, WebDriverException):
+        pass
+    time.sleep(0.5)
+
+
+def _find_and_click(driver, css: str, labels: list[str], timeout: int = 25) -> bool:
+    """Find & click a control by CSS selector (if given) or visible text label,
+    searching every frame and piercing shadow DOM, retrying until ``timeout``.
+
+    PCC mixes classic JSF screens (content in iframes) with newer evergreen
+    screens (web components / shadow DOM), and the target may not have
+    rendered yet even after ``_wait_page_ready`` — so this doubles as the
+    "wait for the specific element" step, not just a one-shot lookup.
+    """
+    end = time.time() + timeout
+    while time.time() < end:
+        driver.switch_to.default_content()
+
+        def _try_here():
+            if css:
+                el = _visible_by_css(driver, css)
+                if el:
+                    return el
+            if labels:
+                el = _visible_by_text(driver, labels)
+                if el:
+                    return el
+            return None
+
+        el = _dfs_frames(driver, _try_here)
+        if el is not None and _robust_click(driver, el):
+            return True
+
+        driver.switch_to.default_content()
+
+        def _try_js_here():
+            if css and _js_deep_click_css(driver, css):
+                return True
+            if labels and _js_deep_click_text(driver, labels):
+                return True
+            return None
+
+        if _dfs_frames(driver, _try_js_here):
+            return True
+        time.sleep(0.4)
+    return False
+
+
+def _navigate_to_administration_record(driver, facility_id: int) -> Optional[str]:
+    """Click Reports -> Clinical -> Administration Record. Returns an error
+    message on failure, or None on success. Caller must already hold the
+    session lock and have called ``_activate_pcc_window``."""
+    _wait_page_ready(driver)
+
+    _log(f"Reports[{facility_id}]: opening Reports.")
+    if not _find_and_click(driver, REPORTS_LINK_CSS, ["Reports"]):
+        return "Couldn't find the Reports link."
+    _activate_pcc_window(driver)  # in case that click opened a new tab/window
+    _wait_page_ready(driver)
+
+    _log(f"Reports[{facility_id}]: opening Clinical tab.")
+    if not _find_and_click(driver, CLINICAL_TAB_CSS, ["Clinical"]):
+        return "Couldn't find the Clinical tab on the Reports page."
+    _activate_pcc_window(driver)
+    _wait_page_ready(driver)
+
+    _log(f"Reports[{facility_id}]: opening Administration Record.")
+    if not _find_and_click(driver, ADMIN_RECORD_LINK_CSS, ["Administration Record"]):
+        return "Couldn't find Administration Record under eMAR on the Clinical tab."
+    _activate_pcc_window(driver)
+    _wait_page_ready(driver)
+    return None
+
+
+def _on_administration_record_page(driver) -> bool:
+    """True if the live page is already the Administration Record report form."""
+    try:
+        return bool(driver.execute_script(
+            "var f = document.forms['frmData'];"
+            "return !!(f && f.REPORT_NAME "
+            "&& f.REPORT_NAME.value === 'Administration Record Report');"
+        ))
+    except WebDriverException:
+        return False
+
+
+def open_administration_record(facility_id: int) -> dict[str, Any]:
+    """Drive an already-open, already-signed-in PCC session to
+    Reports -> Clinical -> Administration Record (under eMAR), landing on that
+    report's parameter/setup screen.
+
+    Each step smart-waits for the page to actually finish loading before
+    hunting for the next control (see ``_wait_page_ready`` / ``_find_and_click``)
+    instead of a fixed sleep, since PCC's screens render at very different
+    speeds depending on facility size and report catalog.
+    """
+    sess = _sessions.get(facility_id)
+    if sess is None:
+        return {"ok": False, "error": "No active session — launch the facility first."}
+    driver = sess["driver"]
+    lock = sess.get("lock")
+
+    if lock is not None and not lock.acquire(timeout=10):
+        return {"ok": False, "error": "Session is busy — try again in a moment."}
+    try:
+        _activate_pcc_window(driver)
+        err = _navigate_to_administration_record(driver, facility_id)
+        if err:
+            return {"ok": False, "error": err}
+
+        try:
+            driver.execute_script("window.focus();")
+        except WebDriverException:
+            pass
+
+        _log(f"Reports[{facility_id}]: Administration Record report setup opened.")
+        return {"ok": True, "message": "Opened Administration Record report setup."}
+    except WebDriverException as exc:
+        return {"ok": False, "error": f"Session is no longer available ({exc.__class__.__name__})."}
+    finally:
+        if lock is not None:
+            lock.release()
+
+
+# JS that fills every field of the real "frmData" Administration Record form from a
+# plain params object, firing input/change events so PCC's own onchange handlers
+# (e.g. onRecordTypeChange) run exactly as if a person had used the controls.
+_APPLY_ADMIN_RECORD_PARAMS_JS = r"""
+const p = arguments[0] || {};
+const f = document.forms['frmData'];
+if (!f) return {ok: false, error: "Report form not found on the current page."};
+
+function fire(el) {
+  el.dispatchEvent(new Event('input', {bubbles: true}));
+  el.dispatchEvent(new Event('change', {bubbles: true}));
+}
+function setVal(name, value) {
+  if (value === undefined || value === null) return;
+  const el = f.elements[name];
+  if (!el) return;
+  el.value = value;
+  fire(el);
+}
+function setChecked(name, values) {
+  const nodes = f.elements[name];
+  if (!nodes) return;
+  const list = nodes.length !== undefined ? Array.from(nodes) : [nodes];
+  const wanted = new Set((values || []).map(String));
+  for (const el of list) {
+    el.checked = wanted.has(String(el.value));
+    fire(el);
+  }
+}
+function setRadio(name, value) {
+  if (value === undefined || value === null) return;
+  const nodes = f.elements[name];
+  if (!nodes) return;
+  const list = nodes.length !== undefined ? Array.from(nodes) : [nodes];
+  for (const el of list) {
+    el.checked = (String(el.value) === String(value));
+    if (el.checked) fire(el);
+  }
+}
+
+setVal('client_id_number', p.client_id_number);
+setVal('client_name', p.client_name);
+setVal('ESOLunitid', p.unit_id);
+setVal('ESOLfloorid', p.floor_id);
+setVal('ESOLreporttype', p.report_type);
+if (typeof onRecordTypeChange === 'function') {
+  try { onRecordTypeChange(); } catch (e) { /* best-effort */ }
+}
+if (p.templates !== undefined) setChecked('ESOLreportTemplate', p.templates);
+setVal('ESOLmonthSelect', p.month);
+setVal('ESOLyearSelect', p.year);
+if (p.weekly_start) {
+  setVal('weekly_start', p.weekly_start);
+  setVal('weekly_start_dummy', p.weekly_start);
+}
+setRadio('ESOLsortOrder', p.sort_order);
+if (p.order_start_date) {
+  setVal('orderStartDate', p.order_start_date);
+  setVal('orderStartDate_dummy', p.order_start_date);
+}
+setVal('sortResidentsBy', p.sort_residents_by);
+setVal('sortOrdersBy', p.sort_orders_by);
+if (p.nurse_admin_notes !== undefined) {
+  const el = f.elements['nurseAdminNotesCheckbox'];
+  if (el) { el.checked = !!p.nurse_admin_notes; fire(el); }
+}
+return {ok: true};
+"""
+
+
+def run_administration_record_report(facility_id: int, params: dict) -> dict[str, Any]:
+    """Fill the real Administration Record report form (on the already-open PCC
+    session) with ``params`` and click the real Run Report button — the report
+    then renders in the live PCC window exactly as if a person had done it.
+
+    Re-navigates to the report setup page first if the session isn't already
+    sitting on it (e.g. time passed, or the operator clicked elsewhere).
+    """
+    sess = _sessions.get(facility_id)
+    if sess is None:
+        return {"ok": False, "error": "No active session — launch the facility first."}
+    driver = sess["driver"]
+    lock = sess.get("lock")
+
+    if lock is not None and not lock.acquire(timeout=10):
+        return {"ok": False, "error": "Session is busy — try again in a moment."}
+    try:
+        _activate_pcc_window(driver)
+        if not _on_administration_record_page(driver):
+            err = _navigate_to_administration_record(driver, facility_id)
+            if err:
+                return {"ok": False, "error": err}
+        else:
+            _wait_page_ready(driver)
+
+        try:
+            result = driver.execute_script(_APPLY_ADMIN_RECORD_PARAMS_JS, params or {})
+        except WebDriverException as exc:
+            return {"ok": False, "error": f"Couldn't fill the report form ({exc.__class__.__name__})."}
+        if not result or not result.get("ok"):
+            return {"ok": False, "error": (result or {}).get("error") or "Couldn't fill the report form."}
+
+        _log(f"Reports[{facility_id}]: running Administration Record report, params={params}")
+        if not _find_and_click(driver, "#runButton", ["Run Report"]):
+            return {"ok": False, "error": "Couldn't find the Run Report button."}
+        _activate_pcc_window(driver)
+
+        try:
+            driver.execute_script("window.focus();")
+        except WebDriverException:
+            pass
+
+        return {"ok": True, "message": "Report is running — check the PCC window."}
+    except WebDriverException as exc:
+        return {"ok": False, "error": f"Session is no longer available ({exc.__class__.__name__})."}
+    finally:
+        if lock is not None:
+            lock.release()

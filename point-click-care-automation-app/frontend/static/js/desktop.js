@@ -38,7 +38,6 @@ let facilitiesByClient = {};        // clientId -> [facility, ...]
 let selectedFacility = null;
 let settings = {};
 let currentUser = null;
-const expandedClients = new Set();
 
 const $ = (id) => document.getElementById(id);
 
@@ -61,7 +60,7 @@ function toast(msg, ok) {
 }
 
 // ---------------------------------------------------------------------------
-// Load + render the sidebar tree
+// Load facilities (flat, no sidebar tree anymore)
 // ---------------------------------------------------------------------------
 async function loadTree() {
   clients = await api.get("/api/clients");
@@ -69,56 +68,6 @@ async function loadTree() {
   for (const c of clients) {
     facilitiesByClient[c.id] = await api.get(`/api/facilities?client_id=${c.id}`);
   }
-  renderTree();
-}
-
-function renderTree() {
-  const tree = $("tree");
-  tree.innerHTML = "";
-  if (clients.length === 0) {
-    tree.innerHTML = `<div class="tree-empty">No facilities assigned to you yet.</div>`;
-    return;
-  }
-  for (const c of clients) {
-    const facs = facilitiesByClient[c.id] || [];
-    const isOpen = expandedClients.has(c.id);
-
-    const wrap = document.createElement("div");
-    wrap.className = "tree-client";
-
-    const header = document.createElement("div");
-    header.className = "tree-client-name" + (isOpen ? " open" : "");
-    header.innerHTML =
-      `<span class="caret">▸</span>` +
-      `<span class="client-label">${escapeHtml(c.name)}</span>` +
-      `<span class="client-count">${facs.length}</span>`;
-    header.onclick = () => toggleClient(c.id);
-    wrap.appendChild(header);
-
-    if (isOpen) {
-      if (facs.length === 0) {
-        const e = document.createElement("div");
-        e.className = "tree-empty";
-        e.textContent = "No facilities";
-        wrap.appendChild(e);
-      }
-      for (const f of facs) {
-        const el = document.createElement("div");
-        el.className = "tree-facility";
-        if (selectedFacility && selectedFacility.id === f.id) el.classList.add("active");
-        el.innerHTML = `${escapeHtml(f.name)}<small>${escapeHtml(f.location || "")}</small>`;
-        el.onclick = () => selectFacility(f);
-        wrap.appendChild(el);
-      }
-    }
-    tree.appendChild(wrap);
-  }
-}
-
-function toggleClient(clientId) {
-  if (expandedClients.has(clientId)) expandedClients.delete(clientId);
-  else expandedClients.add(clientId);
-  renderTree();
 }
 
 // ---------------------------------------------------------------------------
@@ -126,17 +75,16 @@ function toggleClient(clientId) {
 // ---------------------------------------------------------------------------
 function selectFacility(f) {
   selectedFacility = f;
-  if (f.client_id != null) expandedClients.add(f.client_id);
+  $("facility-search").value = f.name;
   $("detail-empty").classList.add("hidden");
   $("detail-card").classList.remove("hidden");
   $("d-name").textContent = f.name;
-  $("d-location").textContent = f.location || "—";
   $("d-url").textContent = f.site_url || (settings.site_url || "") + "  (default)";
   $("d-user").textContent = f.username || "—";
   $("d-totp").textContent = f.has_totp ? "Configured ✓" : "None";
   if (f.has_totp) showStoredTotp(f.id);
   $("launch-status").textContent = "";
-  renderTree();
+  closeFacilityDropdown();
 }
 
 async function showStoredTotp(facilityId) {
@@ -150,6 +98,157 @@ async function showStoredTotp(facilityId) {
     }
   } catch { /* leave default text */ }
 }
+
+$("nav-reports-btn").onclick = async () => {
+  if (!selectedFacility) {
+    toast("Select a facility above first.", false);
+    return;
+  }
+  toast(`Opening Reports for ${selectedFacility.name}…`, true);
+  try {
+    const r = await api.post(`/api/facilities/${selectedFacility.id}/reports/administration-record`);
+    toast(r.message || "Opened.", true);
+    $("facilities-section").classList.add("hidden");
+    $("admin-record-view").classList.remove("hidden");
+  } catch (err) {
+    toast(err.message, false);
+  }
+};
+
+// ---------------------------------------------------------------------------
+// Administration Record report form — native mirror of PCC's report setup
+// page. Filled here, then applied to the real PCC page (and Run Report
+// clicked there) via /reports/administration-record/run.
+// ---------------------------------------------------------------------------
+const AR_TEMPLATES = [
+  { value: "271", label: "Diabetic Administration Record (DAR*)" },
+  { value: "135", label: "Medication Administration Record (MAR*)" },
+  { value: "2", label: "Treatment Administration Record (TAR*)" },
+  { value: "295", label: "ZZ-Behavior Record (Behaviors)" },
+  { value: "1", label: "ZZ-Diabetic Administration Record (--)" },
+  { value: "382", label: "ZZ-Injection Administration Record (IAR)" },
+  { value: "383", label: "ZZ-Lab Administration Record (LAR)" },
+  { value: "294", label: "ZZ-Lab Administration Report (LAB)" },
+  { value: "55", label: "ZZ-Med Admin Record-LN (MAR-LN)" },
+  { value: "140", label: "ZZ-None (None)" },
+  { value: "136", label: "ZZ-Treatment Administration Record (TAR)" },
+  { value: "381", label: "ZZ-Wound TAR (Wound)" },
+  { value: "431", label: "ZZ-Wound TAR (Wound)" },
+  { value: "803", label: "zzzDiabetic Administration Record (DAR**)" },
+];
+
+function populateAdminRecordTemplates() {
+  const box = $("ar-templates");
+  box.innerHTML = "";
+  for (const t of AR_TEMPLATES) {
+    const label = document.createElement("label");
+    label.className = "ar-template-item";
+    label.innerHTML = `<input type="checkbox" value="${t.value}"> ${escapeHtml(t.label)}`;
+    box.appendChild(label);
+  }
+}
+
+function populateAdminRecordMonthYear() {
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const monthSel = $("ar-month");
+  monthSel.innerHTML = months.map((m, i) => `<option value="${i + 1}">${m}</option>`).join("");
+
+  const now = new Date();
+  monthSel.value = String(now.getMonth() + 1);
+
+  const yearSel = $("ar-year");
+  const curYear = now.getFullYear();
+  let opts = "";
+  for (let y = 1995; y <= curYear; y++) opts += `<option value="${y}">${y}</option>`;
+  yearSel.innerHTML = opts;
+  yearSel.value = String(curYear);
+}
+
+function toggleAdminRecordReportType() {
+  const weekly = $("ar-report-type").value === "3208";
+  $("ar-monthly-fields").classList.toggle("hidden", weekly);
+  $("ar-weekly-fields").classList.toggle("hidden", !weekly);
+}
+
+function toggleAdminRecordOrderDate() {
+  const onOrAfter = document.querySelector('input[name="ar-sort-order"]:checked').value === "S";
+  $("ar-order-start-date").disabled = !onOrAfter;
+}
+
+function toPccDate(isoDate) {
+  // "yyyy-mm-dd" (native <input type=date>) -> "mm/dd/yyyy" (what PCC expects).
+  if (!isoDate) return "";
+  const [y, m, d] = isoDate.split("-");
+  return `${m}/${d}/${y}`;
+}
+
+async function runAdministrationRecordReport() {
+  if (!selectedFacility) {
+    toast("Select a facility above first.", false);
+    return;
+  }
+  const templates = [...$("ar-templates").querySelectorAll("input[type=checkbox]:checked")].map(
+    (c) => c.value
+  );
+  const params = {
+    client_id_number: $("ar-client-number").value.trim(),
+    client_name: $("ar-client-name").value.trim(),
+    unit_id: $("ar-unit").value,
+    floor_id: $("ar-floor").value,
+    report_type: $("ar-report-type").value,
+    templates,
+    month: $("ar-month").value,
+    year: $("ar-year").value,
+    weekly_start: toPccDate($("ar-start-date").value),
+    sort_order: document.querySelector('input[name="ar-sort-order"]:checked').value,
+    order_start_date: toPccDate($("ar-order-start-date").value),
+    sort_residents_by: $("ar-sort-residents").value,
+    sort_orders_by: $("ar-sort-orders").value,
+    nurse_admin_notes: $("ar-nurse-notes").checked,
+  };
+  const s = $("ar-run-status");
+  s.className = "status";
+  s.textContent = "Running report on the PCC window…";
+  try {
+    const r = await api.post(
+      `/api/facilities/${selectedFacility.id}/reports/administration-record/run`,
+      params
+    );
+    s.className = "status ok";
+    s.textContent = r.message || "Report is running.";
+  } catch (err) {
+    s.className = "status err";
+    s.textContent = err.message;
+  }
+}
+
+function initAdminRecordForm() {
+  populateAdminRecordTemplates();
+  populateAdminRecordMonthYear();
+  toggleAdminRecordReportType();
+  toggleAdminRecordOrderDate();
+
+  $("ar-report-type").addEventListener("change", toggleAdminRecordReportType);
+  document
+    .querySelectorAll('input[name="ar-sort-order"]')
+    .forEach((r) => r.addEventListener("change", toggleAdminRecordOrderDate));
+
+  $("ar-check-all").onclick = (e) => {
+    e.preventDefault();
+    $("ar-templates").querySelectorAll("input[type=checkbox]").forEach((c) => (c.checked = true));
+  };
+  $("ar-clear-all").onclick = (e) => {
+    e.preventDefault();
+    $("ar-templates").querySelectorAll("input[type=checkbox]").forEach((c) => (c.checked = false));
+  };
+  $("ar-back-btn").onclick = () => {
+    $("admin-record-view").classList.add("hidden");
+    $("facilities-section").classList.remove("hidden");
+  };
+  $("ar-run-btn").onclick = runAdministrationRecordReport;
+}
+
+initAdminRecordForm();
 
 $("launch-btn").onclick = async () => {
   if (!selectedFacility) return;
@@ -235,7 +334,7 @@ function startSessionsPolling() {
 }
 
 // ---------------------------------------------------------------------------
-// Sidebar search
+// Facility search & dropdown selector (top of the main view)
 // ---------------------------------------------------------------------------
 function allFacilities() {
   const nameById = {};
@@ -249,58 +348,70 @@ function allFacilities() {
   return out;
 }
 
-function renderSearch(query) {
-  const box = $("search-results");
-  const tree = $("tree");
+function renderFacilityDropdown(query) {
+  const box = $("facility-dropdown");
   const q = query.trim().toLowerCase();
-  $("search-clear").classList.toggle("hidden", q === "");
+  $("facility-clear").classList.toggle("hidden", q === "");
 
-  if (q === "") {
-    box.classList.add("hidden");
-    box.innerHTML = "";
-    tree.classList.remove("hidden");
-    return;
-  }
-
-  const matches = allFacilities().filter((f) =>
+  const all = allFacilities();
+  const matches = q === "" ? all : all.filter((f) =>
     (f.name || "").toLowerCase().includes(q) ||
     (f.location || "").toLowerCase().includes(q) ||
     (f._client || "").toLowerCase().includes(q)
   );
 
-  tree.classList.add("hidden");
-  box.classList.remove("hidden");
   box.innerHTML = "";
   if (matches.length === 0) {
-    box.innerHTML = `<div class="tree-empty">No facilities match "${escapeHtml(query)}"</div>`;
-    return;
+    box.innerHTML = `<div class="tree-empty">${
+      all.length === 0 ? "No facilities assigned to you yet." : `No facilities match "${escapeHtml(query)}"`
+    }</div>`;
+  } else {
+    for (const f of matches) {
+      const el = document.createElement("div");
+      el.className = "search-result";
+      if (selectedFacility && selectedFacility.id === f.id) el.classList.add("active");
+      el.innerHTML =
+        `<span class="sr-name">${escapeHtml(f.name)}</span>` +
+        `<small>${escapeHtml(f._client)}${f.location ? " · " + escapeHtml(f.location) : ""}</small>`;
+      el.onclick = () => selectFacility(f);
+      box.appendChild(el);
+    }
   }
-  for (const f of matches) {
-    const el = document.createElement("div");
-    el.className = "search-result";
-    el.innerHTML =
-      `<span class="sr-name">${escapeHtml(f.name)}</span>` +
-      `<small>${escapeHtml(f._client)}${f.location ? " · " + escapeHtml(f.location) : ""}</small>`;
-    el.onclick = () => { selectFacility(f); clearSearch(); };
-    box.appendChild(el);
-  }
+  box.classList.remove("hidden");
 }
 
-function clearSearch() {
-  $("search-input").value = "";
-  renderSearch("");
+function openFacilityDropdown() {
+  renderFacilityDropdown($("facility-search").value);
 }
 
-$("search-input").addEventListener("input", (e) => renderSearch(e.target.value));
-$("search-input").addEventListener("keydown", (e) => {
+function closeFacilityDropdown() {
+  $("facility-dropdown").classList.add("hidden");
+}
+
+function clearFacilitySearch() {
+  $("facility-search").value = "";
+  selectedFacility = null;
+  $("detail-card").classList.add("hidden");
+  $("detail-empty").classList.remove("hidden");
+  renderFacilityDropdown("");
+}
+
+$("facility-search").addEventListener("focus", openFacilityDropdown);
+$("facility-search").addEventListener("input", (e) => renderFacilityDropdown(e.target.value));
+$("facility-search").addEventListener("keydown", (e) => {
   if (e.key === "Enter") {
-    const first = $("search-results").querySelector(".search-result");
+    const first = $("facility-dropdown").querySelector(".search-result");
     if (first) first.click();
   } else if (e.key === "Escape") {
-    clearSearch();
+    closeFacilityDropdown();
+    $("facility-search").blur();
   }
 });
-$("search-clear").onclick = clearSearch;
+$("facility-clear").onclick = clearFacilitySearch;
+
+document.addEventListener("click", (e) => {
+  if (!e.target.closest(".facility-picker")) closeFacilityDropdown();
+});
 
 $("refresh-btn").onclick = async () => {
   try { await loadSettings(); await loadTree(); toast("Refreshed.", true); }
@@ -378,6 +489,8 @@ $("app-logout-btn").onclick = async () => {
   selectedFacility = null;
   clients = [];
   facilitiesByClient = {};
+  $("facility-search").value = "";
+  closeFacilityDropdown();
   $("detail-card").classList.add("hidden");
   $("detail-empty").classList.remove("hidden");
   showLogin();

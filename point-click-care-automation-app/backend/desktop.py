@@ -181,6 +181,23 @@ def api_session_focus(facility_id: int):
     return jsonify({"ok": True, **info})
 
 
+@app.post("/api/facilities/<int:facility_id>/reports/administration-record")
+@login_required
+def api_open_administration_record(facility_id: int):
+    # Drives the already-open, already-signed-in Selenium session locally —
+    # no cloud round-trip needed (no secrets involved, just DOM navigation).
+    result = automation.open_administration_record(facility_id)
+    return jsonify(result), (200 if result.get("ok") else 400)
+
+
+@app.post("/api/facilities/<int:facility_id>/reports/administration-record/run")
+@login_required
+def api_run_administration_record(facility_id: int):
+    params = request.get_json(force=True, silent=True) or {}
+    result = automation.run_administration_record_report(facility_id, params)
+    return jsonify(result), (200 if result.get("ok") else 400)
+
+
 def main() -> None:
     config.ensure_desktop_dirs()
     url = f"http://{config.HOST}:{config.DESKTOP_PORT}"
