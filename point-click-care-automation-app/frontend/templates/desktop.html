@@ -56,6 +56,9 @@
         <button id="nav-results-btn" class="sidebar-nav-item" title="View generated reports">
           <span class="nav-icon">🗂</span> Results
         </button>
+        <button id="nav-census-btn" class="sidebar-nav-item" title="Look up a resident's Census by resident number for the selected facility">
+          <span class="nav-icon">🧾</span> Census
+        </button>
       </nav>
 
       <div class="powered-by">Powered by Epicle, Inc</div>
@@ -226,6 +229,38 @@
           <div id="results-list" class="results-list"><!-- populated by JS --></div>
           <div id="results-empty" class="empty-state hidden">
             <p>No reports generated yet. Open a facility's Reports, run one, and it'll show up here.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Census: search a resident by number, then capture the Census tab's
+           results table. Self-contained like Reports — launches/signs in the
+           facility first if needed, and signs out again once captured. -->
+      <section id="census-view" class="view hidden">
+        <div class="admin-record-header">
+          <button id="census-back-btn" class="ghost" title="Back">&larr; Back</button>
+          <h2>Census — <span id="census-facility-name"></span></h2>
+        </div>
+
+        <div class="card">
+          <div class="form-grid">
+            <label>Resident Number
+              <input type="text" id="census-resident-number" placeholder="e.g. 3115" autocomplete="off" />
+            </label>
+          </div>
+          <div class="row">
+            <button id="census-search-btn" class="primary">Search Census</button>
+          </div>
+          <div id="census-search-status" class="status"></div>
+        </div>
+
+        <div id="census-results-card" class="card hidden">
+          <h3>Census Results</h3>
+          <div class="table-scroll">
+            <table id="census-results-table" class="pcc-table">
+              <thead><tr id="census-results-head"></tr></thead>
+              <tbody id="census-results-body"></tbody>
+            </table>
           </div>
         </div>
       </section>

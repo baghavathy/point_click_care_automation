@@ -1628,3 +1628,179 @@ def run_administration_record_report(facility_id: int, params: dict,
                 if entry and entry.get("kind") == "html" else
                 "Report generated, saved to Results, and signed out.")
     return {"ok": True, "message": message, "result": entry}
+
+
+# --------------------------------------------------------------------------
+# Census
+# --------------------------------------------------------------------------
+def _find_and_fill(driver, css: str, value: str, timeout: int = 25) -> bool:
+    """Find a text field by CSS (searching every frame, piercing shadow DOM
+    via ``_dfs_frames``) and type ``value`` into it with real keystrokes
+    (``_enter_text``), retrying until ``timeout``."""
+    end = time.time() + timeout
+    while time.time() < end:
+        driver.switch_to.default_content()
+
+        def _try_here():
+            return _visible_by_css(driver, css)
+
+        el = _dfs_frames(driver, _try_here)
+        if el is not None:
+            try:
+                _enter_text(el, value)
+                return True
+            except WebDriverException:
+                pass
+        time.sleep(0.4)
+    return False
+
+
+CENSUS_TABLE_SELECTOR = "table.pccResults"
+
+_SCRAPE_CENSUS_TABLE_JS = r"""
+const table = document.querySelector(arguments[0]);
+if (!table) return {ok: false, error: "Census table not found on the current page."};
+const headers = Array.from(table.querySelectorAll('thead th'))
+  .map(th => (th.textContent || '').trim())
+  .filter(Boolean);
+const rows = Array.from(table.querySelectorAll('tbody tr'))
+  .map(tr => Array.from(tr.querySelectorAll('td')).map(td => (td.textContent || '').trim()))
+  .filter(cells => cells.length > 0);
+return {ok: true, headers: headers, rows: rows};
+"""
+
+
+def _scrape_census_table(driver, facility_id: int) -> dict[str, Any]:
+    """Read the resident's Census tab table (Effective Date / Primary Payer /
+    Payer File / Status / Action Code / HIPPS / Care Level / Location — HIPPS
+    is conditional, so headers are read live rather than hardcoded) into
+    {ok, headers, rows}. Never raises — returns {ok: False, error} if the
+    table isn't on the page."""
+    try:
+        result = driver.execute_script(_SCRAPE_CENSUS_TABLE_JS, CENSUS_TABLE_SELECTOR)
+    except WebDriverException as exc:
+        return {"ok": False, "error": f"Couldn't read the Census table ({exc.__class__.__name__})."}
+    if not result or not result.get("ok"):
+        _log(f"Census[{facility_id}]: {(result or {}).get('error', 'table not found')}")
+        return result or {"ok": False, "error": "Census table not found."}
+    return result
+
+
+def _navigate_to_census(driver, facility_id: int, resident_number: str) -> Optional[str]:
+    """Search PCC's global resident search for ``resident_number``, open that
+    resident's profile, and click through to their Census tab. Returns an
+    error message on failure, or None on success. Caller must already hold
+    the session lock and have called ``_activate_pcc_window``."""
+    _wait_page_ready(driver)
+
+    _log(f"Census[{facility_id}]: searching for resident {resident_number}.")
+    if not _find_and_fill(driver, "#searchField", resident_number):
+        return "Couldn't find the resident search field."
+    if not _find_and_click(driver, "input[onclick*='submitSearchNew']", ["Search"]):
+        return "Couldn't find the Search button."
+    _activate_pcc_window(driver)
+    _wait_page_ready(driver)
+
+    _log(f"Census[{facility_id}]: opening resident profile.")
+    if not _find_and_click(driver, "a[href*='filesdisplay.xhtml']", []):
+        return f"No resident found matching '{resident_number}'."
+    _activate_pcc_window(driver)
+    _wait_page_ready(driver)
+
+    _log(f"Census[{facility_id}]: opening Census tab.")
+    if not _find_and_click(driver, "a[data-testid='tab-link'][href*='clinicaldisplay.xhtml']", ["Census"]):
+        return "Couldn't find the Census tab on the resident's profile."
+    _activate_pcc_window(driver)
+    _wait_page_ready(driver)
+    return None
+
+
+def open_census_auto(facility: dict, settings: dict, resident_number: str,
+                      owner_id=None, logout_settings: Optional[dict] = None) -> dict[str, Any]:
+    """Self-contained entry point for the sidebar's Census button: launches
+    and signs in the facility if it isn't already an active session (mirrors
+    ``open_reports_auto``), then searches for ``resident_number``, opens that
+    resident's Census tab, and captures its results table."""
+    facility_id = facility.get("id")
+    sess = _sessions.get(facility_id)
+    if sess is None:
+        launch_result = launch_facility(facility, settings, owner_id)
+        if not launch_result.get("ok"):
+            return launch_result
+        for _ in range(300):  # up to ~30s for Firefox/profile/proxy startup
+            sess = _sessions.get(facility_id)
+            if sess is not None:
+                break
+            time.sleep(0.1)
+        if sess is None:
+            return {"ok": False, "error": "Couldn't start the browser session."}
+
+    lock = sess.get("lock")
+    if lock is not None:
+        if not lock.acquire(timeout=150):
+            return {"ok": False, "error": "Still signing in — try Census again in a moment."}
+        lock.release()  # search_census re-acquires it itself below
+
+    return search_census(facility_id, resident_number, logout_settings)
+
+
+def search_census(facility_id: int, resident_number: str,
+                   logout_settings: Optional[dict] = None) -> dict[str, Any]:
+    """Drive an already-open, already-signed-in PCC session to search for
+    ``resident_number``, open that resident's Census tab, and capture its
+    results table. Signs out of PCC afterward when ``logout_settings`` is
+    given (same as the Administration Record report flow) so the session
+    doesn't sit open unattended."""
+    sess = _sessions.get(facility_id)
+    if sess is None:
+        return {"ok": False, "error": "No active session — launch the facility first."}
+    driver = sess["driver"]
+    lock = sess.get("lock")
+
+    resident_number = (resident_number or "").strip()
+    if not resident_number:
+        return {"ok": False, "error": "Resident number is required."}
+
+    if lock is not None and not lock.acquire(timeout=10):
+        return {"ok": False, "error": "Session is busy — try again in a moment."}
+    table: dict[str, Any] = {}
+    try:
+        _activate_pcc_window(driver)
+        err = _navigate_to_census(driver, facility_id, resident_number)
+        if err:
+            return {"ok": False, "error": err}
+
+        table = _scrape_census_table(driver, facility_id)
+        if not table.get("ok"):
+            return {"ok": False, "error": table.get("error") or "Couldn't read the Census table."}
+
+        _log(f"Census[{facility_id}]: captured {len(table['rows'])} row(s) "
+             f"for resident {resident_number}.")
+    except WebDriverException as exc:
+        return {"ok": False, "error": f"Session is no longer available ({exc.__class__.__name__})."}
+    finally:
+        if lock is not None:
+            lock.release()
+
+    # Lock released above — logout_facility manages the session's lock itself,
+    # and a plain threading.Lock isn't reentrant, so this must happen after.
+    if logout_settings is not None:
+        logout_result = logout_facility(facility_id, logout_settings)
+        if not logout_result.get("ok"):
+            _log(f"Census[{facility_id}]: auto-logout after search failed: "
+                 f"{logout_result.get('error')}")
+
+    headers = table.get("headers", [])
+    rows = [
+        {h: (row[i] if i < len(row) else "") for i, h in enumerate(headers)}
+        for row in table.get("rows", [])
+    ]
+    message = ("Census captured and signed out." if logout_settings is not None
+               else "Census captured.")
+    return {
+        "ok": True,
+        "message": message,
+        "resident_number": resident_number,
+        "headers": headers,
+        "rows": rows,
+    }

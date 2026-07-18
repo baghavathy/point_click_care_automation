@@ -101,7 +101,7 @@ async function showStoredTotp(facilityId) {
 // ---------------------------------------------------------------------------
 // The four mutually-exclusive main-view sections.
 // ---------------------------------------------------------------------------
-const SECTIONS = ["empty-view", "launch-view", "admin-record-view", "results-view"];
+const SECTIONS = ["empty-view", "launch-view", "admin-record-view", "results-view", "census-view"];
 function showSection(id) {
   for (const s of SECTIONS) $(s).classList.toggle("hidden", s !== id);
 }
@@ -150,6 +150,73 @@ $("nav-results-btn").onclick = async () => {
   showSection("results-view");
 };
 $("results-back-btn").onclick = () => showSection("empty-view");
+
+// ---------------------------------------------------------------------------
+// Census — search a resident by number, capture their Census tab's results
+// table. Self-contained like Reports: the backend launches/signs in the
+// facility first if needed, then signs it back out once captured.
+// ---------------------------------------------------------------------------
+$("nav-census-btn").onclick = () => {
+  if (!selectedFacility) {
+    toast("Select a facility above first.", false);
+    return;
+  }
+  $("census-facility-name").textContent = selectedFacility.name;
+  $("census-search-status").textContent = "";
+  $("census-results-card").classList.add("hidden");
+  showSection("census-view");
+};
+$("census-back-btn").onclick = () => showSection("empty-view");
+
+function renderCensusResults(headers, rows) {
+  const head = $("census-results-head");
+  const body = $("census-results-body");
+  head.innerHTML = headers.map((h) => `<th>${escapeHtml(h)}</th>`).join("");
+  body.innerHTML = rows
+    .map(
+      (row) =>
+        "<tr>" + headers.map((h) => `<td>${escapeHtml(row[h] ?? "")}</td>`).join("") + "</tr>"
+    )
+    .join("");
+  $("census-results-card").classList.remove("hidden");
+}
+
+async function searchCensus() {
+  if (!selectedFacility) {
+    toast("Select a facility above first.", false);
+    return;
+  }
+  const residentNumber = $("census-resident-number").value.trim();
+  if (!residentNumber) {
+    toast("Enter a resident number first.", false);
+    return;
+  }
+  const s = $("census-search-status");
+  s.className = "status";
+  s.textContent = "Searching PCC for this resident… launching/signing in if needed, then " +
+    "opening their Census tab. This signs out once it's captured.";
+  $("census-search-btn").disabled = true;
+  $("census-results-card").classList.add("hidden");
+  try {
+    const r = await api.post(`/api/facilities/${selectedFacility.id}/census/search`, {
+      resident_number: residentNumber,
+    });
+    s.className = "status ok";
+    s.textContent = r.message || "Census captured.";
+    renderCensusResults(r.headers || [], r.rows || []);
+    refreshSessions(); // the facility's session just got signed out
+  } catch (err) {
+    s.className = "status err";
+    s.textContent = err.message;
+  } finally {
+    $("census-search-btn").disabled = false;
+  }
+}
+
+$("census-search-btn").onclick = searchCensus;
+$("census-resident-number").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") searchCensus();
+});
 
 // ---------------------------------------------------------------------------
 // Administration Record report form — native mirror of PCC's report setup
