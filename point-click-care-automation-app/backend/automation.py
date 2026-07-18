@@ -1383,9 +1383,23 @@ def _report_period_label(params: dict) -> str:
     return time.strftime("%Y-%m-%d")
 
 
-def _wait_for_report_pdf_url(driver, baseline_handles: set, facility_id: int,
+def _snapshot_window_urls(driver, handles) -> dict:
+    """Record each handle's current URL right before Run Report is clicked, so
+    a later poll can tell a window that just navigated to the report apart
+    from one that was ALREADY sitting there from a previous run."""
+    urls: dict = {}
+    for h in handles:
+        try:
+            driver.switch_to.window(h)
+            urls[h] = driver.current_url
+        except WebDriverException:
+            urls[h] = None
+    return urls
+
+
+def _wait_for_report_pdf_url(driver, baseline_urls: dict, facility_id: int,
                               timeout: int = 180) -> Optional[str]:
-    """Poll every open window until one of them is sitting on the rendered
+    """Poll every open window until one of them newly lands on the rendered
     PDF. Returns that window's URL (driver stays focused on it) or None on
     timeout. PCC's report render can take a while for a large facility/date
     range, hence the generous timeout.
@@ -1393,8 +1407,12 @@ def _wait_for_report_pdf_url(driver, baseline_handles: set, facility_id: int,
     Checks EVERY open window, not just ones opened after Run Report — PCC
     doesn't reliably always pop a brand new window for the PDF; sometimes it
     navigates the resident-find.jsp loader window (or even the original PCC
-    window) straight to it instead. ``baseline_handles`` is only used later,
-    by ``_close_extra_windows``, to know what's safe to close."""
+    window) straight to it instead. But a window that was ALREADY on a
+    getadminrecordreport.xhtml URL before this click (``baseline_urls``,
+    keyed by handle, from ``_snapshot_window_urls``) is a leftover from a
+    previous report, not this run's output — matching it would silently
+    return stale/unrelated content, which is exactly what happened once
+    popups started actually opening instead of being blocked."""
     end = time.time() + timeout
     seen_urls: set = set()
     while time.time() < end:
@@ -1411,8 +1429,11 @@ def _wait_for_report_pdf_url(driver, baseline_handles: set, facility_id: int,
             if url not in seen_urls:
                 seen_urls.add(url)
                 _log(f"Reports[{facility_id}]: window {h[:8]} -> {url}")
-            if ADMIN_RECORD_PDF_URL_MARKER in url:
-                return url
+            if ADMIN_RECORD_PDF_URL_MARKER not in url:
+                continue
+            if url == baseline_urls.get(h):
+                continue  # already sitting there before this click — stale, not ours
+            return url
         time.sleep(1)
     _log(f"Reports[{facility_id}]: timed out waiting for the PDF; windows seen: {sorted(seen_urls)}")
     return None
@@ -1547,11 +1568,13 @@ def run_administration_record_report(facility_id: int, params: dict,
             return {"ok": False, "error": (result or {}).get("error") or "Couldn't fill the report form."}
 
         baseline_handles = set(driver.window_handles)
+        baseline_urls = _snapshot_window_urls(driver, baseline_handles)
+        _activate_pcc_window(driver)  # snapshotting switched focus around; land back on PCC
         _log(f"Reports[{facility_id}]: running Administration Record report, params={params}")
         if not _find_and_click(driver, "#runButton", ["Run Report"]):
             return {"ok": False, "error": "Couldn't find the Run Report button."}
 
-        pdf_url = _wait_for_report_pdf_url(driver, baseline_handles, facility_id)
+        pdf_url = _wait_for_report_pdf_url(driver, baseline_urls, facility_id)
         if not pdf_url:
             _close_extra_windows(driver, baseline_handles)
             return {"ok": False, "error": "Timed out waiting for the report to finish generating."}
