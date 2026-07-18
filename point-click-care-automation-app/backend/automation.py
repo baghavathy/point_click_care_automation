@@ -91,18 +91,6 @@ def _build_options(settings: dict[str, str]) -> Options:
     if settings.get("headless") == "1":
         options.add_argument("-headless")
 
-    # PCC's "Run Report" handler renders the PDF in a window.open() popup.
-    # Our click fallbacks (_js_mouse_click / _js_deep_click_*, used when a
-    # real WebDriver click can't land on PCC's iframe/shadow-DOM screens)
-    # dispatch synthetic, untrusted JS events, which Firefox's popup blocker
-    # silently drops the resulting window.open() for — the report then never
-    # appears and _wait_for_report_pdf_url just times out with no error. A
-    # real user's click is always trusted so this never bites manual use.
-    # Every Selenium session also starts from a fresh profile, so there's no
-    # saved "allow popups for this site" permission to fall back on either.
-    options.set_preference("dom.disable_open_during_load", False)
-    options.set_preference("permissions.default.popup", 0)
-
     if settings.get("proxy_enabled") == "1":
         host = (settings.get("proxy_host") or "").strip()
         port = (settings.get("proxy_port") or "").strip()
@@ -782,7 +770,17 @@ def _js_mouse_click(driver, el) -> bool:
 
 def _robust_click(driver, el) -> bool:
     """Click without depending on OS window focus: synthetic DOM click first,
-    then a full JS mouse-event sequence, then a real pointer as a last resort."""
+    then a real pointer click, then a full JS mouse-event sequence as a last
+    resort.
+
+    The first two strategies are genuine, TRUSTED input events (WebDriver's
+    own click synthesis / a real pointer move+click) — Firefox's popup
+    blocker allows a window.open() triggered by these without any browser
+    preference changes. The JS-dispatched fallback (_js_mouse_click) fires
+    untrusted events instead, so its window.open() calls (if any) get
+    silently blocked; it's kept last, only for elements neither trusted
+    strategy can reach (e.g. genuinely covered/behind another element),
+    where triggering a popup was never in play anyway."""
     try:
         driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
     except WebDriverException:
@@ -792,13 +790,12 @@ def _robust_click(driver, el) -> bool:
         return True
     except WebDriverException:
         pass
-    if _js_mouse_click(driver, el):
-        return True
     try:
         ActionChains(driver).move_to_element(el).pause(0.1).click().perform()
         return True
     except WebDriverException:
-        return False
+        pass
+    return _js_mouse_click(driver, el)
 
 
 _LOGOUT_LABELS = ["Sign Out", "Sign out", "Log out", "Logout", "Log Out", "Logoff", "Log off"]
