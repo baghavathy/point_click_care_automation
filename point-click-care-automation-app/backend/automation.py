@@ -1683,6 +1683,47 @@ def _scrape_census_table(driver, facility_id: int) -> dict[str, Any]:
     return result
 
 
+_FIND_RESIDENT_LINK_JS = r"""
+const number = String(arguments[0]);
+const suffix = '(' + number + ')';
+const links = document.querySelectorAll('a');
+for (const a of links) {
+  const text = (a.textContent || '').replace(/\s+/g, ' ').trim();
+  if (text.endsWith(suffix)) return a;
+}
+return null;
+"""
+
+
+def _find_resident_link(driver, resident_number: str):
+    """Find a search-results link for this resident by matching the visible
+    label's trailing "(resident_number)" — e.g. "Ashmore, Mary  (3115)".
+    PCC's actual href for this link varies by context (seen both
+    cp_careclientprofile.jsp and filesdisplay.xhtml), so the stable thing to
+    match on is the visible number in parentheses, not the URL."""
+    try:
+        return driver.execute_script(_FIND_RESIDENT_LINK_JS, resident_number)
+    except WebDriverException:
+        return None
+
+
+def _find_and_click_resident_link(driver, resident_number: str, timeout: int = 25) -> bool:
+    """Find & click the resident's search-results link (searching every
+    frame), retrying until ``timeout`` while the results page renders."""
+    end = time.time() + timeout
+    while time.time() < end:
+        driver.switch_to.default_content()
+
+        def _try_here():
+            return _find_resident_link(driver, resident_number)
+
+        el = _dfs_frames(driver, _try_here)
+        if el is not None and _robust_click(driver, el):
+            return True
+        time.sleep(0.4)
+    return False
+
+
 def _navigate_to_census(driver, facility_id: int, resident_number: str) -> Optional[str]:
     """Search PCC's global resident search for ``resident_number``, open that
     resident's profile, and click through to their Census tab. Returns an
@@ -1699,7 +1740,7 @@ def _navigate_to_census(driver, facility_id: int, resident_number: str) -> Optio
     _wait_page_ready(driver)
 
     _log(f"Census[{facility_id}]: opening resident profile.")
-    if not _find_and_click(driver, "a[href*='filesdisplay.xhtml']", []):
+    if not _find_and_click_resident_link(driver, resident_number):
         return f"No resident found matching '{resident_number}'."
     _activate_pcc_window(driver)
     _wait_page_ready(driver)
