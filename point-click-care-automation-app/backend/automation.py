@@ -91,6 +91,18 @@ def _build_options(settings: dict[str, str]) -> Options:
     if settings.get("headless") == "1":
         options.add_argument("-headless")
 
+    # PCC's "Run Report" handler renders the PDF in a window.open() popup.
+    # Our click fallbacks (_js_mouse_click / _js_deep_click_*, used when a
+    # real WebDriver click can't land on PCC's iframe/shadow-DOM screens)
+    # dispatch synthetic, untrusted JS events, which Firefox's popup blocker
+    # silently drops the resulting window.open() for — the report then never
+    # appears and _wait_for_report_pdf_url just times out with no error. A
+    # real user's click is always trusted so this never bites manual use.
+    # Every Selenium session also starts from a fresh profile, so there's no
+    # saved "allow popups for this site" permission to fall back on either.
+    options.set_preference("dom.disable_open_during_load", False)
+    options.set_preference("permissions.default.popup", 0)
+
     if settings.get("proxy_enabled") == "1":
         host = (settings.get("proxy_host") or "").strip()
         port = (settings.get("proxy_port") or "").strip()
