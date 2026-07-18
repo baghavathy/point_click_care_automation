@@ -59,6 +59,9 @@
         <button id="nav-census-btn" class="sidebar-nav-item" title="Look up a resident's Census by resident number for the selected facility">
           <span class="nav-icon">🧾</span> Census
         </button>
+        <button id="nav-facesheet-btn" class="sidebar-nav-item" title="Generate a resident's Face Sheet by resident number for the selected facility">
+          <span class="nav-icon">📄</span> Facesheet
+        </button>
       </nav>
 
       <div class="powered-by">Powered by Epicle, Inc</div>
@@ -261,6 +264,36 @@
               <thead><tr id="census-results-head"></tr></thead>
               <tbody id="census-results-body"></tbody>
             </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- Facesheet: enter a resident number, generate their Face Sheet PDF.
+           Self-contained like Census — launches/signs in the facility first
+           if needed, and signs out again once captured. -->
+      <section id="facesheet-view" class="view hidden">
+        <div class="admin-record-header">
+          <button id="facesheet-back-btn" class="ghost" title="Back">&larr; Back</button>
+          <h2>Facesheet — <span id="facesheet-facility-name"></span></h2>
+        </div>
+
+        <div class="card">
+          <div class="form-grid">
+            <label>Resident Number
+              <input type="text" id="facesheet-resident-number" placeholder="e.g. 3115" autocomplete="off" />
+            </label>
+          </div>
+          <div class="row">
+            <button id="facesheet-run-btn" class="primary">Generate Face Sheet</button>
+          </div>
+          <div id="facesheet-run-status" class="status"></div>
+        </div>
+
+        <div class="card">
+          <h3>Facesheet Results</h3>
+          <div id="facesheet-results-list" class="results-list"><!-- populated by JS --></div>
+          <div id="facesheet-results-empty" class="empty-state hidden">
+            <p>No Face Sheets generated yet. Enter a resident number above and generate one.</p>
           </div>
         </div>
       </section>

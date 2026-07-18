@@ -1034,6 +1034,10 @@ CLINICAL_TAB_CSS = "a.mdl-tabs__tab[data-tab='2']"
 # a plain report-listing link keyed by its catalog reportId (2177).
 ADMIN_RECORD_LINK_CSS = "a.reportList-title[href*='reportId=2177']"
 
+# The "Face Sheet" report under the Clinical tab — same report-listing link
+# pattern as Administration Record, keyed by its own catalog reportId (2168).
+FACESHEET_LINK_CSS = "a.reportList-title[href*='reportId=2168']"
+
 
 def _wait_page_ready(driver, timeout: int = 40) -> None:
     """Best-effort smart wait: the page (and any jQuery ajax it kicked off) has
@@ -1842,3 +1846,237 @@ def search_census(facility_id: int, resident_number: str,
         "headers": headers,
         "rows": rows,
     }
+
+
+# --------------------------------------------------------------------------
+# Facesheet
+# --------------------------------------------------------------------------
+def _navigate_to_facesheet(driver, facility_id: int) -> Optional[str]:
+    """Click Reports -> Clinical -> Face Sheet. Returns an error message on
+    failure, or None on success. Caller must already hold the session lock
+    and have called ``_activate_pcc_window``."""
+    _wait_page_ready(driver)
+
+    _log(f"Facesheet[{facility_id}]: opening Reports.")
+    if not _find_and_click(driver, REPORTS_LINK_CSS, ["Reports"]):
+        return "Couldn't find the Reports link."
+    _activate_pcc_window(driver)
+    _wait_page_ready(driver)
+
+    _log(f"Facesheet[{facility_id}]: opening Clinical tab.")
+    if not _find_and_click(driver, CLINICAL_TAB_CSS, ["Clinical"]):
+        return "Couldn't find the Clinical tab on the Reports page."
+    _activate_pcc_window(driver)
+    _wait_page_ready(driver)
+
+    _log(f"Facesheet[{facility_id}]: opening Face Sheet.")
+    if not _find_and_click(driver, FACESHEET_LINK_CSS, ["Face Sheet"]):
+        return "Couldn't find Face Sheet on the Clinical tab."
+    _activate_pcc_window(driver)
+    _wait_page_ready(driver)
+    return None
+
+
+def _fill_facesheet_resident(driver, facility_id: int, resident_number: str,
+                              fill_timeout: int = 25, lookup_timeout: int = 15) -> Optional[str]:
+    """Type ``resident_number`` into the Face Sheet form's Resident Number
+    field with real keystrokes (so PCC's own throttled search handler fires),
+    press Enter to trigger the lookup, then wait for the matching resident's
+    name to auto-populate the Resident field. Returns an error message on
+    failure (field not found, or no match found), or None on success."""
+    end = time.time() + fill_timeout
+    el = None
+    while time.time() < end and el is None:
+        driver.switch_to.default_content()
+
+        def _try_here():
+            return _visible_by_css(driver, "#clientLookupClientIdNumberTextbox")
+
+        el = _dfs_frames(driver, _try_here)
+        if el is None:
+            time.sleep(0.4)
+    if el is None:
+        return "Couldn't find the Resident Number field."
+    try:
+        _enter_text(el, resident_number)
+        el.send_keys(Keys.RETURN)
+    except WebDriverException:
+        return "Couldn't type into the Resident Number field."
+
+    lookup_end = time.time() + lookup_timeout
+    while time.time() < lookup_end:
+        driver.switch_to.default_content()
+
+        def _read_name():
+            name_el = _visible_by_css(driver, "#clientLookupClientNameTextbox")
+            value = name_el.get_attribute("value") if name_el else None
+            return value or None
+
+        name = _dfs_frames(driver, _read_name)
+        if name:
+            _log(f"Facesheet[{facility_id}]: resident {resident_number} resolved to '{name}'.")
+            return None
+        time.sleep(0.5)
+    return f"No resident found matching '{resident_number}'."
+
+
+def _wait_for_new_pdf_window(driver, baseline_handles: set, facility_id: int,
+                              module: str, timeout: int = 180) -> Optional[str]:
+    """Poll for a NEW browser window/tab (opened after ``baseline_handles``
+    was captured) that has finished rendering a PDF. Unlike the
+    Administration Record flow, this report's URL isn't a stable marker to
+    match on (it varies by reportId/module) — instead this detects a PDF via
+    the tab's own ``document.contentType`` (Firefox's built-in PDF viewer
+    reports this correctly for a raw PDF response) or a ".pdf"-ending
+    title/URL. Returns that window's URL (driver stays focused on it), or
+    None on timeout."""
+    end = time.time() + timeout
+    seen: set = set()
+    while time.time() < end:
+        try:
+            handles = driver.window_handles
+        except WebDriverException:
+            return None
+        for h in handles:
+            if h in baseline_handles:
+                continue
+            try:
+                driver.switch_to.window(h)
+                if driver.execute_script("return document.readyState") != "complete":
+                    continue
+                url = driver.current_url
+                title = driver.title or ""
+                content_type = driver.execute_script("return document.contentType") or ""
+            except WebDriverException:
+                continue
+            if h not in seen:
+                seen.add(h)
+                _log(f"{module}[{facility_id}]: new window {h[:8]} -> {url} "
+                     f"(title={title!r}, type={content_type!r})")
+            if (content_type == "application/pdf"
+                    or title.lower().endswith(".pdf")
+                    or url.lower().endswith(".pdf")):
+                return url
+        time.sleep(1)
+    _log(f"{module}[{facility_id}]: timed out waiting for the PDF window.")
+    return None
+
+
+def open_facesheet_auto(facility: dict, settings: dict, resident_number: str,
+                         owner_id=None, logout_settings: Optional[dict] = None) -> dict[str, Any]:
+    """Self-contained entry point for the sidebar's Facesheet button: launches
+    and signs in the facility if it isn't already an active session (mirrors
+    ``open_reports_auto``/``open_census_auto``), then navigates
+    Reports -> Clinical -> Face Sheet, looks up ``resident_number``, runs the
+    report, and captures the generated PDF."""
+    facility_id = facility.get("id")
+    sess = _sessions.get(facility_id)
+    if sess is None:
+        launch_result = launch_facility(facility, settings, owner_id)
+        if not launch_result.get("ok"):
+            return launch_result
+        for _ in range(300):  # up to ~30s for Firefox/profile/proxy startup
+            sess = _sessions.get(facility_id)
+            if sess is not None:
+                break
+            time.sleep(0.1)
+        if sess is None:
+            return {"ok": False, "error": "Couldn't start the browser session."}
+
+    lock = sess.get("lock")
+    if lock is not None:
+        if not lock.acquire(timeout=150):
+            return {"ok": False, "error": "Still signing in — try Facesheet again in a moment."}
+        lock.release()  # run_facesheet_report re-acquires it itself below
+
+    return run_facesheet_report(facility_id, resident_number, logout_settings)
+
+
+def run_facesheet_report(facility_id: int, resident_number: str,
+                          logout_settings: Optional[dict] = None) -> dict[str, Any]:
+    """Drive an already-open, already-signed-in PCC session to
+    Reports -> Clinical -> Face Sheet, look up ``resident_number``, run the
+    report, and capture the generated PDF. Signs out of PCC afterward when
+    ``logout_settings`` is given (same as the other report flows)."""
+    sess = _sessions.get(facility_id)
+    if sess is None:
+        return {"ok": False, "error": "No active session — launch the facility first."}
+    driver = sess["driver"]
+    lock = sess.get("lock")
+
+    resident_number = (resident_number or "").strip()
+    if not resident_number:
+        return {"ok": False, "error": "Resident number is required."}
+
+    if lock is not None and not lock.acquire(timeout=10):
+        return {"ok": False, "error": "Session is busy — try again in a moment."}
+    entry = None
+    try:
+        _activate_pcc_window(driver)
+        err = _navigate_to_facesheet(driver, facility_id)
+        if err:
+            return {"ok": False, "error": err}
+
+        err = _fill_facesheet_resident(driver, facility_id, resident_number)
+        if err:
+            return {"ok": False, "error": err}
+
+        baseline_handles = set(driver.window_handles)
+        _log(f"Facesheet[{facility_id}]: running Face Sheet for resident {resident_number}.")
+        if not _find_and_click(driver, "#runButton", ["Run Report"]):
+            return {"ok": False, "error": "Couldn't find the Run Report button."}
+
+        pdf_url = _wait_for_new_pdf_window(driver, baseline_handles, facility_id, "Facesheet")
+        if not pdf_url:
+            _close_extra_windows(driver, baseline_handles)
+            return {"ok": False, "error": "Timed out waiting for the Face Sheet to finish generating."}
+
+        _log(f"Facesheet[{facility_id}]: report ready at {pdf_url}")
+        kind = "pdf"
+        try:
+            file_bytes = _fetch_pdf_bytes_via_browser(driver, pdf_url)
+        except ValueError as exc:
+            _log(f"Facesheet[{facility_id}]: PDF fetch failed ({exc}); "
+                 f"falling back to saving the page's HTML.")
+            file_bytes = _capture_page_html_fallback(driver)
+            if not file_bytes:
+                _close_extra_windows(driver, baseline_handles)
+                return {"ok": False, "error": f"Couldn't download the generated Face Sheet ({exc})."}
+            kind = "html"
+
+        _close_extra_windows(driver, baseline_handles)
+
+        entry = reportstore.add_result(
+            owner_id=sess.get("owner_id"),
+            facility_id=facility_id,
+            facility_name=sess.get("facility_name", ""),
+            report_name="Face Sheet",
+            period_label=f"Resident {resident_number} facesheet",
+            generated_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            file_bytes=file_bytes,
+            kind=kind,
+        )
+        if kind == "html":
+            _log(f"Facesheet[{facility_id}]: saved HTML fallback {entry['id']} "
+                 f"({entry['size_bytes']} bytes) — convert to PDF manually.")
+        else:
+            _log(f"Facesheet[{facility_id}]: saved report {entry['id']} ({entry['size_bytes']} bytes).")
+    except WebDriverException as exc:
+        return {"ok": False, "error": f"Session is no longer available ({exc.__class__.__name__})."}
+    finally:
+        if lock is not None:
+            lock.release()
+
+    # Lock released above — logout_facility manages the session's lock itself,
+    # and a plain threading.Lock isn't reentrant, so this must happen after.
+    if logout_settings is not None:
+        logout_result = logout_facility(facility_id, logout_settings)
+        if not logout_result.get("ok"):
+            _log(f"Facesheet[{facility_id}]: auto-logout after report failed: "
+                 f"{logout_result.get('error')}")
+
+    message = ("Couldn't fetch the PDF directly, so the report page was saved as HTML instead "
+                "(see Facesheet Results — you'll need to convert it to PDF manually). Signed out."
+                if entry and entry.get("kind") == "html" else
+                "Face Sheet generated, saved to Facesheet Results, and signed out.")
+    return {"ok": True, "message": message, "result": entry}

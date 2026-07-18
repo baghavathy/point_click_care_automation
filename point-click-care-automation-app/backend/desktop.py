@@ -231,6 +231,28 @@ def api_census_search(facility_id: int):
     return jsonify(result), (200 if result.get("ok") else 400)
 
 
+@app.post("/api/facilities/<int:facility_id>/facesheet/run")
+@login_required
+@_cloud_call
+def api_facesheet_run(facility_id: int):
+    # Self-contained, like Census: launches + signs in the facility first if
+    # there's no active session yet, then navigates Reports -> Clinical ->
+    # Face Sheet, looks up the resident number, runs the report, saves the
+    # generated PDF, and signs out.
+    data = request.get_json(force=True, silent=True) or {}
+    resident_number = (data.get("resident_number") or "").strip()
+    if not resident_number:
+        return jsonify({"ok": False, "error": "Resident number is required."}), 400
+    cfg = cloud.get(f"/api/facilities/{facility_id}/launch-config")
+    facility = cfg.get("facility") or {}
+    settings = cfg.get("settings") or {}
+    owner_id = cloud.user.get("id") if cloud.user else None
+    logout_settings = cloud.get("/api/settings")
+    result = automation.open_facesheet_auto(facility, settings, resident_number,
+                                             owner_id, logout_settings)
+    return jsonify(result), (200 if result.get("ok") else 400)
+
+
 # --------------------------------------------------------------------------
 # Results — generated report PDFs, saved locally on this machine only
 # --------------------------------------------------------------------------

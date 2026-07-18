@@ -101,7 +101,7 @@ async function showStoredTotp(facilityId) {
 // ---------------------------------------------------------------------------
 // The four mutually-exclusive main-view sections.
 // ---------------------------------------------------------------------------
-const SECTIONS = ["empty-view", "launch-view", "admin-record-view", "results-view", "census-view"];
+const SECTIONS = ["empty-view", "launch-view", "admin-record-view", "results-view", "census-view", "facesheet-view"];
 function showSection(id) {
   for (const s of SECTIONS) $(s).classList.toggle("hidden", s !== id);
 }
@@ -216,6 +216,91 @@ async function searchCensus() {
 $("census-search-btn").onclick = searchCensus;
 $("census-resident-number").addEventListener("keydown", (e) => {
   if (e.key === "Enter") searchCensus();
+});
+
+// ---------------------------------------------------------------------------
+// Facesheet — enter a resident number, generate their Face Sheet PDF.
+// Self-contained like Census: the backend launches/signs in the facility
+// first if needed, then signs it back out once the PDF is captured.
+// ---------------------------------------------------------------------------
+$("nav-facesheet-btn").onclick = async () => {
+  if (!selectedFacility) {
+    toast("Select a facility above first.", false);
+    return;
+  }
+  $("facesheet-facility-name").textContent = selectedFacility.name;
+  $("facesheet-run-status").textContent = "";
+  await loadFacesheetResults();
+  showSection("facesheet-view");
+};
+$("facesheet-back-btn").onclick = () => showSection("empty-view");
+
+async function loadFacesheetResults() {
+  const box = $("facesheet-results-list");
+  const empty = $("facesheet-results-empty");
+  let results = [];
+  try {
+    results = await api.get("/api/reports/results");
+  } catch (err) {
+    toast(err.message, false);
+    return;
+  }
+  results = results.filter((r) => r.report_name === "Face Sheet");
+  box.innerHTML = "";
+  empty.classList.toggle("hidden", results.length > 0);
+  for (const r of results) {
+    const when = new Date(r.generated_at).toLocaleString();
+    const isHtml = r.kind === "html";
+    const row = document.createElement("div");
+    row.className = "result-row";
+    row.innerHTML =
+      `<div class="result-main">` +
+      `<div class="result-title">${escapeHtml(r.facility_name)} — ${escapeHtml(r.period_label)}` +
+      (isHtml ? ` <span class="result-badge" title="Couldn't fetch the real PDF — this is the report page's HTML, needs manual PDF conversion">HTML fallback</span>` : "") +
+      `</div>` +
+      `<div class="result-sub">generated ${escapeHtml(when)}</div>` +
+      `</div>` +
+      `<button class="ghost result-view-btn">View</button>`;
+    row.querySelector(".result-view-btn").onclick = () =>
+      window.open(`/api/reports/results/${r.id}/file`, "_blank");
+    box.appendChild(row);
+  }
+}
+
+async function runFacesheet() {
+  if (!selectedFacility) {
+    toast("Select a facility above first.", false);
+    return;
+  }
+  const residentNumber = $("facesheet-resident-number").value.trim();
+  if (!residentNumber) {
+    toast("Enter a resident number first.", false);
+    return;
+  }
+  const s = $("facesheet-run-status");
+  s.className = "status";
+  s.textContent = "Generating Face Sheet on the PCC window… launching/signing in if needed, " +
+    "then Reports → Clinical → Face Sheet. This signs out once it's captured.";
+  $("facesheet-run-btn").disabled = true;
+  try {
+    const r = await api.post(`/api/facilities/${selectedFacility.id}/facesheet/run`, {
+      resident_number: residentNumber,
+    });
+    s.className = "status ok";
+    s.textContent = r.message || "Face Sheet generated.";
+    await loadFacesheetResults();
+    refreshSessions(); // the facility's session just got signed out
+  } catch (err) {
+    s.className = "status err";
+    s.textContent = err.message;
+  } finally {
+    $("facesheet-run-btn").disabled = false;
+  }
+}
+
+$("facesheet-run-btn").onclick = runFacesheet;
+$("facesheet-resident-number").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") runFacesheet();
 });
 
 // ---------------------------------------------------------------------------
